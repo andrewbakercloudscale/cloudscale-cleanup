@@ -1,10 +1,10 @@
 === CloudScale Cleanup ===
-Contributors: cloudscale
+Contributors: andrewjbaker
 Tags: cleanup, database, media, revisions, transients
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 2.5.77
+Stable tag: 2.5.87
 License: GPL-2.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -189,4 +189,4 @@ New: Cron Management section with 24-hour timeline graph, Cron Congestion detect
 
 == Privacy Policy ==
 
-CloudScale Cleanup does not collect, transmit, or store any data outside your server. No telemetry, analytics, or external requests of any kind are made by this plugin. All operations run entirely within your WordPress installation.
+CloudScale Cleanup does not collect or transmit any data outside your server except when the optional Telegram notification integration is configured. If you enter a Telegram bot token and chat ID, the plugin will send error alert notifications to that Telegram chat when cleanup errors occur. No data is sent to Telegram if the integration is not configured. No other external requests are made by this plugin.

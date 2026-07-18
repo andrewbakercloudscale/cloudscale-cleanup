@@ -1,8 +1,9 @@
 <?php
 /**
  * Plugin Name: CloudScale Cleanup
+ * Plugin URI:  https://cloudscale.consulting
  * Description: Database and media library cleanup with dry-run preview, image optimisation, PNG to JPEG conversion, and chunked processing safe on any server. Free, open source, no subscriptions.
- * Version:     2.5.77
+ * Version:     2.5.87
  * Author:      CloudScale
  * Author URI:  https://cloudscale.consulting
  * License:     GPL-2.0-or-later
@@ -14,7 +15,35 @@
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.77' );
+// Our UI uses plain native emoji characters everywhere. WP's built-in twemoji
+// polyfill replaces them with <img> tags from s.w.org when it (sometimes wrongly)
+// decides a browser lacks native emoji support; if that CDN is ever unreachable
+// the images break. Native rendering is all we need, so skip the polyfill outright.
+add_action( 'init', function () {
+    remove_action( 'wp_head', 'print_emoji_detection_script', 7 );
+    remove_action( 'wp_print_styles', 'print_emoji_styles' );
+    remove_action( 'embed_head', 'print_emoji_detection_script' );
+    remove_filter( 'wp_mail', 'wp_staticize_emoji_for_email' );
+    remove_filter( 'the_content_feed', 'wp_staticize_emoji' );
+    remove_filter( 'comment_text_rss', 'wp_staticize_emoji' );
+    add_filter( 'tiny_mce_plugins', function ( $plugins ) {
+        return is_array( $plugins ) ? array_diff( $plugins, array( 'wpemoji' ) ) : $plugins;
+    } );
+    add_filter( 'wp_resource_hints', function ( $urls ) {
+        return array_values( array_diff( $urls, array( 'https://s.w.org' ) ) );
+    } );
+}, 1 );
+
+// wp-admin/includes/admin-filters.php re-registers the admin_print_scripts/
+// admin_print_styles emoji hooks, and that file loads after `init` has already
+// fired — so the removal above never catches them on admin pages. Remove again
+// on admin_init, which runs after admin-filters.php has loaded.
+add_action( 'admin_init', function () {
+    remove_action( 'admin_print_scripts', 'print_emoji_detection_script' );
+    remove_action( 'admin_print_styles', 'print_emoji_styles' );
+}, 1 );
+
+define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.87' );
 define( 'CLOUDSCALE_CLEANUP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_URL', plugin_dir_url( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_SLUG', 'cloudscale-cleanup' );
@@ -158,130 +187,6 @@ function cscc_enqueue_assets( $hook ) {
     div[style*="#f3e5f5"] .csc-health-metric-value { color: #7b1fa2 !important; }
     .csc-health-metric { border: none !important; }';
     wp_add_inline_style( 'cloudscale-cleanup-css', $cscc_inline_css );
-
-    // Health render, guard, and button handlers, inline (cache proof).
-    $cscc_health_js = <<<'ENDJS'
-(function() {
-    var el = document.getElementById('hm-weeks-left');
-    if (!el) return;
-    var obs = new MutationObserver(function() {
-        var t = el.textContent || '';
-        if (t.match(/\d{4,}.*wk/i) || t.match(/~\d+.*mo/i)) {
-            el.textContent = '>> 2 Years';
-            el.style.color = '#2e7d32';
-        }
-    });
-    obs.observe(el, { childList: true, characterData: true, subtree: true });
-})();
-(function() {
-    var target = document.getElementById('tab-site-health');
-    if (!target) return;
-    var obs = new MutationObserver(function() {
-        var bad = document.querySelectorAll('[style*="grid-column"]');
-        bad.forEach(function(el) {
-            if (el.textContent && el.textContent.indexOf('Max Resource') >= 0) {
-                el.remove();
-            }
-        });
-    });
-    obs.observe(target, { childList: true, subtree: true });
-})();
-jQuery(function($) {
-    var fmt = function(b) { if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GB'; if (b >= 1048576) return (b/1048576).toFixed(1)+' MB'; return (b/1024).toFixed(0)+' KB'; };
-    var ragColors = {green:'#2e7d32',amber:'#e65100',red:'#c62828',grey:'#78909c'};
-    var ragBgs = {green:'#e8f5e9',amber:'#fff3e0',red:'#ffebee',grey:'#f5f5f5'};
-    var ragLabels = {green:'6+ months of disk space remaining',amber:'3 to 6 months of disk space remaining',red:'Less than 3 months of disk space remaining',grey:'Collecting weekly data to calculate trend'};
-
-    function cscHealthRender(d) {
-        var rag = d.disk_rag || 'grey';
-        $('#csc-health-rag-bar').css('background', ragBgs[rag]);
-        $('#csc-health-rag-dot').css('background', ragColors[rag]);
-        $('#csc-health-rag-label').text(rag === 'grey' ? 'Collecting Data' : rag.charAt(0).toUpperCase()+rag.slice(1)).css('color', ragColors[rag]);
-        $('#csc-health-rag-detail').text(ragLabels[rag] || '').css('color', ragColors[rag]);
-        $('#hm-disk-used').text(fmt(d.disk_used));
-        $('#hm-disk-free').text(fmt(d.disk_free));
-        $('#hm-disk-total').text(fmt(d.disk_total));
-        $('#hm-db-size').text(fmt(d.db_size));
-        $('#hm-growth').text(d.growth_per_week > 0 ? fmt(d.growth_per_week)+'/wk' : (d.weekly_count >= 2 ? 'Stable' : 'Collecting\u2026'));
-        if (d.weeks_remaining > 104) {
-            $('#hm-weeks-left').text('>> 2 Years').css('color', '#2e7d32');
-        } else if (d.weeks_remaining > 0) {
-            var wl = Math.round(d.weeks_remaining);
-            var wlColor = d.disk_rag === 'red' ? '#c62828' : (d.disk_rag === 'amber' ? '#e65100' : '#2e7d32');
-            $('#hm-weeks-left').text(wl + ' weeks').css('color', wlColor);
-        } else if (d.growth_per_week <= 0 && d.weekly_count >= 2) {
-            $('#hm-weeks-left').text('Stable').css('color', '#2e7d32');
-        } else { $('#hm-weeks-left').text('\u2014').css('color',''); }
-        var cpuNow = d.cpu_pct_now >= 0 ? d.cpu_pct_now+'%' : '\u2014';
-        if (d.cpu_load_now >= 0) cpuNow += ' (load '+d.cpu_load_now.toFixed(2)+')';
-        $('#hm-cpu-now').text(cpuNow);
-        $('#hm-cpu-24h').text(d.cpu_pct_max_24h >= 0 ? d.cpu_pct_max_24h+'%' : '\u2014');
-        $('#hm-cpu-7d').text(d.cpu_pct_max_7d >= 0 ? d.cpu_pct_max_7d+'%' : '\u2014');
-        var memNow = d.mem_pct_now >= 0 ? d.mem_pct_now+'%' : '\u2014';
-        if (d.mem_used_now >= 0 && d.mem_total > 0) memNow += ' ('+fmt(d.mem_used_now)+' / '+fmt(d.mem_total)+')';
-        $('#hm-mem-now').text(memNow);
-        $('#hm-mem-24h').text(d.mem_pct_max_24h >= 0 ? d.mem_pct_max_24h+'%' : '\u2014');
-        $('#hm-mem-7d').text(d.mem_pct_max_7d >= 0 ? d.mem_pct_max_7d+'%' : '\u2014');
-
-        if (d.max_resource_now !== undefined) {
-            $('[style*="grid-column:1/-1"]').filter(function(){ return $(this).text().indexOf('Max Resource') >= 0; }).remove();
-            var $memGrid = $('#hm-mem-7d').closest('[style*="grid"]');
-            if ($memGrid.length && !$('#hm-maxres-now').length) {
-                $memGrid.after('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px">' +
-                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (now)</div><div class="csc-health-metric-value" id="hm-maxres-now">&middot;</div></div>' +
-                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (24h)</div><div class="csc-health-metric-value" id="hm-maxres-24h">&middot;</div></div>' +
-                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (7d)</div><div class="csc-health-metric-value" id="hm-maxres-7d">&middot;</div></div>' +
-                '</div>');
-            }
-            if (d.max_resource_now >= 0) $('#hm-maxres-now').text(d.max_resource_now + '%');
-            if (d.max_resource_24h >= 0) $('#hm-maxres-24h').text(d.max_resource_24h + '%');
-            if (d.max_resource_7d >= 0) $('#hm-maxres-7d').text(d.max_resource_7d + '%');
-        }
-
-        $('#hm-hourly-count').text(d.hourly_count);
-        $('#hm-weekly-count').text(d.weekly_count);
-        $('#hm-last-hourly').text(d.last_hourly || 'Never');
-        $('#hm-last-weekly').text(d.last_weekly || 'Never');
-        $('#hm-data-span').text(d.weeks_of_data > 0 ? d.weeks_of_data : '0');
-        $('#csc-health-loading').hide();
-        $('#csc-health-content').show();
-    }
-
-    if ($('#csc-health-loading').is(':visible')) {
-        $.post(CSC.ajax_url, { action: 'cscc_health_get', nonce: CSC.nonce }, function(resp) {
-            if (resp.success) cscHealthRender(resp.data);
-        });
-    }
-
-    $(document).on('click', '#btn-health-refresh', function() {
-        var $b = $(this).prop('disabled',true).html('\u23f3 Loading\u2026');
-        $.post(CSC.ajax_url, { action: 'cscc_health_get', nonce: CSC.nonce }, function(resp) {
-            $b.prop('disabled',false).html('\ud83d\udd04 Refresh');
-            if (resp.success) cscHealthRender(resp.data);
-        }).fail(function(){ $b.prop('disabled',false).html('\ud83d\udd04 Refresh'); });
-    });
-
-    $(document).on('click', '#btn-sysstat-test', function() {
-        var $b = $(this).prop('disabled',true).html('\u23f3 Testing...');
-        var blue = {background:'#e3f2fd',borderColor:'#90caf9'};
-        var $box = $('#csc-sysstat-status').show().css(blue);
-        $('#csc-sysstat-label').text('Testing sysstat...').css('color','#1565c0');
-        $('#csc-sysstat-icon').text('\u23f3');
-        $('#csc-sysstat-detail').text('').css('color','#1565c0');
-        $('#csc-sysstat-instructions').hide();
-        $.post(CSC.ajax_url, { action: 'cscc_health_sysstat_test', nonce: CSC.nonce }, function(resp) {
-            $b.prop('disabled',false).html('\ud83d\udd27 Test Metrics');
-            $box.css(blue);
-            if (!resp.success) { $('#csc-sysstat-icon').text('\u274c'); $('#csc-sysstat-label').text('Test failed'); return; }
-            var d = resp.data;
-            $('#csc-sysstat-icon').text('\u2705');
-            $('#csc-sysstat-label').text('PHP snapshot metrics active');
-            $('#csc-sysstat-detail').text(d.cpu_count+' CPU core(s) | CPU '+d.cpu_pct_now+'% | Mem '+d.mem_pct_now+'%');
-        }).fail(function(){ $b.prop('disabled',false).html('\ud83d\udd27 Test Metrics'); $('#csc-sysstat-icon').text('\u274c'); $('#csc-sysstat-label').text('Network error'); });
-    });
-});
-ENDJS;
-    wp_add_inline_script( 'cloudscale-cleanup-js', $cscc_health_js, 'after' );
 }
 
 // ─── Admin dashboard widget ───────────────────────────────────────────────────
@@ -508,8 +413,8 @@ class CSCC_Front_Widget extends WP_Widget {
             elseif ( $health_rag === 'red' ) { $health_label = 'Critical'; }
         }
 
-        echo $args['before_widget'];
-        echo $args['before_title'] . esc_html( $title ) . $args['after_title'];
+        echo $args['before_widget']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
+        echo $args['before_title'] . esc_html( $title ) . $args['after_title']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
         ?>
         <div class="csc-front-widget">
             <ul class="csc-fw-list">
@@ -540,15 +445,18 @@ class CSCC_Front_Widget extends WP_Widget {
                 <a href="<?php echo esc_url( admin_url( 'tools.php?page=cloudscale-cleanup' ) ); ?>" class="csc-fw-link csc-fw-link-admin">Run Cleanup</a>
                 <?php endif; ?>
             </div>
+            <?php if ( ! empty( $instance['show_credit'] ) ) : ?>
             <p class="csc-fw-credit">Powered by <a href="https://cloudscale.consulting" target="_blank" rel="noopener">CloudScale Cleanup</a></p>
+            <?php endif; ?>
         </div>
         <?php
-        echo $args['after_widget'];
+        echo $args['after_widget']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
     }
 
     /** Settings form in Appearance -> Widgets */
     public function form( $instance ) {
-        $title = ! empty( $instance['title'] ) ? $instance['title'] : 'Site Maintenance';
+        $title       = ! empty( $instance['title'] ) ? $instance['title'] : 'Site Maintenance';
+        $show_credit = ! empty( $instance['show_credit'] );
         ?>
         <p>
             <label for="<?php echo esc_attr( $this->get_field_id( 'title' ) ); ?>">Title:</label>
@@ -557,13 +465,21 @@ class CSCC_Front_Widget extends WP_Widget {
                    name="<?php echo esc_attr( $this->get_field_name( 'title' ) ); ?>"
                    type="text" value="<?php echo esc_attr( $title ); ?>">
         </p>
+        <p>
+            <input type="checkbox"
+                   id="<?php echo esc_attr( $this->get_field_id( 'show_credit' ) ); ?>"
+                   name="<?php echo esc_attr( $this->get_field_name( 'show_credit' ) ); ?>"
+                   value="1"<?php checked( $show_credit ); ?>>
+            <label for="<?php echo esc_attr( $this->get_field_id( 'show_credit' ) ); ?>"><?php esc_html_e( 'Show credit link', 'cloudscale-cleanup' ); ?></label>
+        </p>
         <?php
     }
 
     /** Save widget settings */
     public function update( $new_instance, $old_instance ) {
-        $instance          = $old_instance;
-        $instance['title'] = sanitize_text_field( $new_instance['title'] );
+        $instance               = $old_instance;
+        $instance['title']       = sanitize_text_field( $new_instance['title'] );
+        $instance['show_credit'] = ! empty( $new_instance['show_credit'] ) ? 1 : 0;
         return $instance;
     }
 }
@@ -829,12 +745,10 @@ function cscc_ajax_scan_db() {
         || isset( $_POST['cscc_clean_drafts'] )
         || isset( $_POST['cscc_clean_transients'] );
 
-
-
     $toggle = function( $opt ) use ( $has_post_toggles ) {
         if ( $has_post_toggles ) {
             // Full UI submission, use POST value, absent = '0' (toggled off)
-            return isset( $_POST[ $opt ] ) && wp_unslash( $_POST[ $opt ] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- boolean toggle, validated via strict comparison
+            return isset( $_POST[ $opt ] ) && wp_unslash( $_POST[ $opt ] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.NonceVerification.Missing -- boolean toggle, validated via strict comparison; nonce verified in outer function
         }
         // No UI data sent (e.g. scheduled run), use DB
         return get_option( $opt, '1' ) === '1';
@@ -1426,7 +1340,7 @@ function cscc_ajax_orphan_delete() {
     if ( ! current_user_can( 'manage_options' ) ) { wp_send_json_error( 'Insufficient permissions.' ); }
 
     global $wpdb;
-    $names  = isset( $_POST['options'] ) ? (array) $_POST['options'] : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing
+    $names  = isset( $_POST['options'] ) ? array_map( 'sanitize_text_field', wp_unslash( (array) $_POST['options'] ) ) : array(); // phpcs:ignore WordPress.Security.NonceVerification.Missing
     $batch  = time();
     $bin    = cscc_orphan_bin_get();
     $moved  = 0;
@@ -1473,7 +1387,7 @@ function cscc_ajax_orphan_restore() {
 
     global $wpdb;
     // phpcs:ignore WordPress.Security.NonceVerification.Missing
-    $batch     = isset( $_POST['batch'] ) ? (int) wp_unslash( $_POST['batch'] ) : 0;
+    $batch     = isset( $_POST['batch'] ) ? (int) sanitize_text_field( wp_unslash( $_POST['batch'] ) ) : 0;
     // phpcs:ignore WordPress.Security.NonceVerification.Missing
     $single    = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
     $bin       = cscc_orphan_bin_get();
@@ -1864,7 +1778,7 @@ function cscc_get_used_attachment_ids() {
     $contents = array();
     foreach ( array_chunk( $post_ids, 50 ) as $batch ) {
         $placeholders = implode( ',', array_fill( 0, count( $batch ), '%d' ) );
-        // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+        // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is $wpdb->posts (trusted), placeholders are generated %d strings
         $rows = $wpdb->get_col( $wpdb->prepare( "SELECT post_content FROM {$wpdb->posts} WHERE ID IN ($placeholders)", $batch ) );
         $contents = array_merge( $contents, $rows );
         unset( $rows );
@@ -2071,10 +1985,6 @@ function cscc_media_recycle_ensure_dir(): bool {
     if ( ! file_exists( $htaccess ) ) {
         @file_put_contents( $htaccess, "Order deny,allow\nDeny from all\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
     }
-    $index = $dir . 'index.php';
-    if ( ! file_exists( $index ) ) {
-        @file_put_contents( $index, "<?php // Silence is golden.\n" ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned index.php stub
-    }
     return true;
 }
 
@@ -2119,7 +2029,7 @@ function cscc_media_recycle_read_manifest(): array {
 function cscc_media_recycle_write_manifest( array $manifest ): bool {
     $path   = cscc_media_recycle_manifest();
     $backup = $path . '.bak';
-    $json   = json_encode( $manifest, JSON_PRETTY_PRINT );
+    $json   = wp_json_encode( $manifest, JSON_PRETTY_PRINT );
 
     if ( $json === false ) {
         error_log( '[CSC] Failed to encode media recycle manifest (json_last_error=' . json_last_error() . ').' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- manifest integrity logging
@@ -2908,7 +2818,7 @@ function cscc_ajax_recycle_orphan_files() {
         }
     }
 
-    file_put_contents( $manifest_path, json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
+    file_put_contents( $manifest_path, wp_json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
 
     $lines[] = array( 'type' => 'success', 'text' => '  ✅ Moved ' . $moved . ' file(s) to recycle bin.' . ( $errors ? ' ' . $errors . ' error(s).' : '' ) );
     $lines[] = array( 'type' => 'info',    'text' => '  Files are in: wp-content/uploads/.csc-recycle/' );
@@ -2978,7 +2888,7 @@ function cscc_ajax_restore_orphan_files() {
         // Clean up empty recycle dirs
         cscc_rmdir_recursive( $recycle );
     } else {
-        file_put_contents( $manifest_path, json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
+        file_put_contents( $manifest_path, wp_json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
     }
 
     $lines[] = array( 'type' => 'success', 'text' => '  ✅ Restored ' . $restored . ' file(s) to original locations.' . ( $errors ? ' ' . $errors . ' error(s).' : '' ) );
@@ -3113,7 +3023,7 @@ function cscc_ajax_recycle_restore_single() {
         wp_delete_file( $manifest_path );
         cscc_rmdir_recursive( cscc_recycle_dir() );
     } else {
-        file_put_contents( $manifest_path, json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
+        file_put_contents( $manifest_path, wp_json_encode( $manifest, JSON_PRETTY_PRINT ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- writes plugin-owned local manifest/meta files
     }
 
     wp_send_json_success( array(
@@ -3141,7 +3051,7 @@ function cscc_rmdir_recursive( string $dir ): void {
         foreach ( $iter as $f ) {
             $f->isDir() ? rmdir( $f->getRealPath() ) : wp_delete_file( $f->getRealPath() ); // phpcs:ignore WordPress.WP.AlternativeFunctions.rmdir_rmdir -- recursive removal of plugin-owned temp dirs
         }
-    } catch ( Exception $e ) {}
+    } catch ( Exception $e ) {} // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
     rmdir( $dir ); // phpcs:ignore WordPress.WP.AlternativeFunctions.rmdir_rmdir -- plugin-owned temp dir
 }
 
@@ -3532,9 +3442,12 @@ function cscc_get_cspj_server_max_mb() {
         $last = strtolower( substr( $val, -1 ) );
         $num  = intval( $val );
         switch ( $last ) {
-            case 'g': $num *= 1073741824; break;
-            case 'm': $num *= 1048576;    break;
-            case 'k': $num *= 1024;       break;
+            case 'g':
+                $num *= 1073741824; break;
+            case 'm':
+                $num *= 1048576;    break;
+            case 'k':
+                $num *= 1024;       break;
         }
         return $num;
     };
@@ -3589,13 +3502,13 @@ function cscc_cspj_convert_png_to_jpeg( $png_path, $quality, $size, $custom_w, $
         $dst = imagecreatetruecolor( $tw, $th );
         imagefill( $dst, 0, 0, imagecolorallocate( $dst, 255, 255, 255 ) );
         imagecopyresampled( $dst, $src, 0, 0, 0, 0, $tw, $th, $orig_w, $orig_h );
-        imagedestroy( $src );
+        imagedestroy( $src ); // phpcs:ignore Generic.PHP.DeprecatedFunctions.Deprecated -- required for PHP 7.x GD memory management; no-op on PHP 8.x where GdImage GCs automatically
         $src = $dst;
     } else {
         $dst = imagecreatetruecolor( $orig_w, $orig_h );
         imagefill( $dst, 0, 0, imagecolorallocate( $dst, 255, 255, 255 ) );
         imagecopy( $dst, $src, 0, 0, 0, 0, $orig_w, $orig_h );
-        imagedestroy( $src );
+        imagedestroy( $src ); // phpcs:ignore Generic.PHP.DeprecatedFunctions.Deprecated -- required for PHP 7.x GD memory management; no-op on PHP 8.x where GdImage GCs automatically
         $src = $dst;
     }
 
@@ -3611,10 +3524,10 @@ function cscc_cspj_convert_png_to_jpeg( $png_path, $quality, $size, $custom_w, $
     $out_path = trailingslashit( $out_dir ) . $name;
 
     if ( ! imagejpeg( $src, $out_path, $quality ) ) {
-        imagedestroy( $src );
+        imagedestroy( $src ); // phpcs:ignore Generic.PHP.DeprecatedFunctions.Deprecated -- required for PHP 7.x GD memory management; no-op on PHP 8.x where GdImage GCs automatically
         return new WP_Error( 'cspj_encode', 'Failed to encode JPEG.' );
     }
-    imagedestroy( $src );
+    imagedestroy( $src ); // phpcs:ignore Generic.PHP.DeprecatedFunctions.Deprecated -- required for PHP 7.x GD memory management; no-op on PHP 8.x where GdImage GCs automatically
 
     $url = trailingslashit( $upload_dir['baseurl'] ) . 'cspj-converted/' . $name;
     return array(
@@ -3690,7 +3603,7 @@ function cscc_ajax_cspj_chunk_upload() {
     if ( $upload_id === '' || $index < 0 || $total <= 0 ) {
         wp_send_json_error( 'Invalid chunk parameters.' );
     }
-    if ( empty( $_FILES['chunk'] ) || ! is_uploaded_file( $_FILES['chunk']['tmp_name'] ) ) {
+    if ( empty( $_FILES['chunk'] ) || ! is_uploaded_file( $_FILES['chunk']['tmp_name'] ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- tmp_name is a server-generated path from PHP's upload mechanism, not user-supplied
         wp_send_json_error( 'No chunk received by the server.' );
     }
 
@@ -3715,7 +3628,7 @@ function cscc_ajax_cspj_chunk_upload() {
 
     $chunk_mb    = cscc_get_cspj_chunk_mb();
     $chunk_bytes = intval( floor( $chunk_mb * 1048576 ) );
-    if ( $_FILES['chunk']['size'] > $chunk_bytes + 4096 ) {
+    if ( $_FILES['chunk']['size'] > $chunk_bytes + 4096 ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- size is a server-generated integer from PHP's upload mechanism, not user-supplied
         wp_send_json_error( 'Chunk exceeds configured chunk size of ' . $chunk_mb . ' MB.' );
     }
 
@@ -3724,7 +3637,7 @@ function cscc_ajax_cspj_chunk_upload() {
     if ( $real_dir === false || strpos( realpath( dirname( $part ) ) . DIRECTORY_SEPARATOR, $real_dir . DIRECTORY_SEPARATOR ) !== 0 ) {
         wp_send_json_error( 'Invalid chunk destination.' );
     }
-    if ( ! move_uploaded_file( $_FILES['chunk']['tmp_name'], $part ) ) {
+    if ( ! move_uploaded_file( $_FILES['chunk']['tmp_name'], $part ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.InputNotValidated -- tmp_name is a server-generated path from PHP's upload mechanism, not user-supplied
         wp_send_json_error( 'Server failed to write chunk to disk.' );
     }
     wp_send_json_success( array( 'index' => $index ) );
@@ -3782,7 +3695,7 @@ function cscc_ajax_cspj_chunk_finish() {
 
     $finfo = finfo_open( FILEINFO_MIME_TYPE );
     $mime  = finfo_file( $finfo, $assembled );
-    finfo_close( $finfo );
+    finfo_close( $finfo ); // phpcs:ignore Generic.PHP.DeprecatedFunctions.Deprecated -- finfo_close() still valid in PHP 8.x with explicit finfo resource
     if ( $mime !== 'image/png' ) {
         cscc_cspj_delete_dir( $dir );
         wp_send_json_error( 'Assembled file is not a valid PNG (detected: ' . esc_html( $mime ) . ').' );
@@ -3893,14 +3806,15 @@ function cscc_ajax_scan_broken_images() {
     );
 
     // Get batch of posts containing images
-    $posts = $wpdb->get_results( $wpdb->prepare(
+    $like_img = '%' . $wpdb->esc_like( '<img' ) . '%';
+    $posts = $wpdb->get_results( $wpdb->prepare( // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- table name is $wpdb->posts, not user input
         "SELECT ID, post_title, post_content FROM {$wpdb->posts}
          WHERE post_status = 'publish'
          AND post_type IN ('post', 'page')
-         AND post_content LIKE '%%<img%%'
+         AND post_content LIKE %s
          ORDER BY ID ASC
          LIMIT %d OFFSET %d",
-        $batch, $offset
+        $like_img, $batch, $offset
     ) );
 
     $broken = array();
@@ -4164,9 +4078,9 @@ function cscc_health_system_time( string $fmt, int $ts = 0 ): string {
         }
     }
     $old_tz = date_default_timezone_get();
-    date_default_timezone_set( $sys_tz );
+    date_default_timezone_set( $sys_tz ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- required to display server timezone info in system health; timezone is restored immediately after
     $result = gmdate( $fmt, $ts ?: time() );
-    date_default_timezone_set( $old_tz );
+    date_default_timezone_set( $old_tz ); // phpcs:ignore WordPress.DateTime.RestrictedFunctions.timezone_change_date_default_timezone_set -- required to display server timezone info in system health; timezone is restored immediately after
     return $result;
 }
 
@@ -4239,7 +4153,7 @@ function cscc_health_get_db_size_bytes(): int {
     global $wpdb;
     $db_name = DB_NAME;
     $row = $wpdb->get_row( $wpdb->prepare(
-        "SELECT SUM(data_length + index_length) AS size FROM information_schema.tables WHERE table_schema = %s",
+        'SELECT SUM(data_length + index_length) AS size FROM information_schema.tables WHERE table_schema = %s',
         $db_name
     ) );
     return ( $row && $row->size ) ? intval( $row->size ) : 0;
@@ -4608,7 +4522,7 @@ function cscc_cron_register_timing_hooks() {
  * @return void
  */
 function cscc_cron_time_start() {
-	$GLOBALS['_cscc_cron_t'][ current_action() ] = microtime( true );
+	$GLOBALS['cscc_cron_t'][ current_action() ] = microtime( true );
 }
 
 /**
@@ -4619,10 +4533,10 @@ function cscc_cron_time_start() {
  */
 function cscc_cron_time_end() {
 	$hook = current_action();
-	if ( ! isset( $GLOBALS['_cscc_cron_t'][ $hook ] ) ) {
+	if ( ! isset( $GLOBALS['cscc_cron_t'][ $hook ] ) ) {
 		return;
 	}
-	$ms  = (int) round( ( microtime( true ) - $GLOBALS['_cscc_cron_t'][ $hook ] ) * 1000 );
+	$ms  = (int) round( ( microtime( true ) - $GLOBALS['cscc_cron_t'][ $hook ] ) * 1000 );
 	$log = get_option( 'cscc_cron_run_log', array() );
 	$log[ $hook ] = array(
 		'last_run'    => time(),
@@ -5416,7 +5330,7 @@ function cscc_ajax_space_scan(): void {
 				$sub_rel    = ltrim( substr( (string) $f->getPathname(), strlen( $real ) ), '/\\' );
 				$all_files[] = [ 'path' => $sub_rel, 'name' => $f->getFilename(), 'size' => $size, 'ext' => $ext ];
 			}
-		} catch ( Exception $e ) {}
+		} catch ( Exception $e ) {} // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
 
 		// Sort descending by size, return top 100.
 		usort( $all_files, static fn( $a, $b ) => $b['size'] <=> $a['size'] );
@@ -5486,7 +5400,7 @@ function cscc_space_insights( string $base, array $dirs ): array {
 			foreach ( new DirectoryIterator( $sf_dir ) as $item ) {
 				if ( ! $item->isDot() && $item->isDir() ) { $sample = $item->getPathname(); break; }
 			}
-		} catch ( Exception $e ) {}
+		} catch ( Exception $e ) {} // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
 
 		if ( $sample ) {
 			$jpg_bases = $jpeg_bases = [];
@@ -5498,7 +5412,7 @@ function cscc_space_insights( string $base, array $dirs ): array {
 					if ( $ext === 'jpg' )  { $jpg_bases[]  = $base_name; }
 					if ( $ext === 'jpeg' ) { $jpeg_bases[] = $base_name; }
 				}
-			} catch ( Exception $e ) {}
+			} catch ( Exception $e ) {} // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
 
 			if ( $jpg_bases && $jpeg_bases ) {
 				$sf      = $by_name['social-formats'];
@@ -5533,7 +5447,7 @@ function cscc_space_insights( string $base, array $dirs ): array {
 					$scaled++;
 				}
 			}
-		} catch ( Exception $e ) {}
+		} catch ( Exception $e ) {} // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
 
 		if ( $total > 10 && $scaled > 0 ) {
 			$pct = (int) round( $scaled / $total * 100 );
@@ -5580,10 +5494,10 @@ function cscc_dir_size_and_count( string $path ): array {
 		foreach ( $iter as $item ) {
 			if ( $item->isFile() ) {
 				$size  += $item->getSize();
-				$count += 1;
+				++$count;
 			}
 		}
-	} catch ( Exception $e ) {
+	} catch ( Exception $e ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch,Squiz.Commenting.EmptyCatchComment.Missing -- intentional: fall through silently if operation fails
 		// skip unreadable directories
 	}
 	return [ $size, $count ];
@@ -5650,6 +5564,9 @@ function cscc_explain_btn( string $id, string $title, array $items, string $colo
 }
 
 function cscc_render_page() {
+    if ( ! current_user_can( 'manage_options' ) ) {
+        wp_die( esc_html__( 'Insufficient permissions.', 'cloudscale-cleanup' ) );
+    }
     $dow            = array( 'mon' => 'Mon', 'tue' => 'Tue', 'wed' => 'Wed', 'thu' => 'Thu', 'fri' => 'Fri', 'sat' => 'Sat', 'sun' => 'Sun' );
     $db_sched_days  = (array) get_option( 'cscc_schedule_db_days',  array( 'mon', 'wed', 'fri' ) );
     $img_sched_days = (array) get_option( 'cscc_schedule_img_days', array( 'mon', 'wed', 'fri' ) );
@@ -6650,22 +6567,22 @@ function cscc_render_page() {
                             array(
                                 'name' => 'WordPress Pseudo-Cron (WP-Cron)',
                                 'rec'  => 'Info',
-                                'desc' => "WordPress has no real scheduler, it simulates cron by piggy-backing on page visits. When a visitor loads a page, WordPress checks if any scheduled jobs are due and fires them inline. On low-traffic sites this means jobs can run late or not at all.",
+                                'desc' => 'WordPress has no real scheduler, it simulates cron by piggy-backing on page visits. When a visitor loads a page, WordPress checks if any scheduled jobs are due and fires them inline. On low-traffic sites this means jobs can run late or not at all.',
                             ),
                             array(
                                 'name' => 'Real Server Cron',
                                 'rec'  => 'Recommended',
-                                'desc' => "A real server cron (crontab entry) calls wp-cron.php on a fixed schedule regardless of traffic. Set DISABLE_WP_CRON=true in wp-config.php once a server cron is in place to stop the pseudo-cron fallback.",
+                                'desc' => 'A real server cron (crontab entry) calls wp-cron.php on a fixed schedule regardless of traffic. Set DISABLE_WP_CRON=true in wp-config.php once a server cron is in place to stop the pseudo-cron fallback.',
                             ),
                             array(
                                 'name' => 'Cron Congestion',
                                 'rec'  => 'Watch out',
-                                'desc' => "When 3 or more jobs fire within the same 5-minute window they compete for CPU, memory and database connections. This can slow page loads or trigger PHP timeouts. Stagger recurring jobs or move heavy tasks to off-peak hours.",
+                                'desc' => 'When 3 or more jobs fire within the same 5-minute window they compete for CPU, memory and database connections. This can slow page loads or trigger PHP timeouts. Stagger recurring jobs or move heavy tasks to off-peak hours.',
                             ),
                             array(
                                 'name' => 'Orphaned Cron Jobs',
                                 'rec'  => 'Clean up',
-                                'desc' => "When a plugin is deactivated or deleted its cron entries are often left behind in the database. These fire on schedule, find no callback, and waste resources. Use the recycle bin to remove them safely.",
+                                'desc' => 'When a plugin is deactivated or deleted its cron entries are often left behind in the database. These fire on schedule, find no callback, and waste resources. Use the recycle bin to remove them safely.',
                             ),
                         )
                     ); ?>
@@ -6703,12 +6620,12 @@ function cscc_render_page() {
                                 array(
                                     'name' => 'X-axis (time)',
                                     'rec'  => 'Info',
-                                    'desc' => "The timeline spans 24 hours from Now (left edge). Gridlines are snapped to clock hours in your local time zone. The \"Now\" marker shows the current moment.",
+                                    'desc' => 'The timeline spans 24 hours from Now (left edge). Gridlines are snapped to clock hours in your local time zone. The "Now" marker shows the current moment.',
                                 ),
                                 array(
                                     'name' => 'Red congestion bands',
                                     'rec'  => 'Watch out',
-                                    'desc' => "A red band highlights any 5-minute window where 3 or more jobs are scheduled to fire. Concurrent jobs compete for CPU and database connections and can slow the site or cause timeouts.",
+                                    'desc' => 'A red band highlights any 5-minute window where 3 or more jobs are scheduled to fire. Concurrent jobs compete for CPU and database connections and can slow the site or cause timeouts.',
                                 ),
                                 array(
                                     'name' => 'Plugin column & status dot',
@@ -6718,7 +6635,7 @@ function cscc_render_page() {
                                 array(
                                     'name' => 'Trash icon',
                                     'rec'  => 'Optional',
-                                    'desc' => "Click the bin icon next to any job to move it to the Cron Recycle Bin. It is not permanently deleted, you can restore it from the bin section below.",
+                                    'desc' => 'Click the bin icon next to any job to move it to the Cron Recycle Bin. It is not permanently deleted, you can restore it from the bin section below.',
                                 ),
                             )
                         ); ?>
@@ -6740,27 +6657,27 @@ function cscc_render_page() {
                                 array(
                                     'name' => 'What is the Cron Job Queue?',
                                     'rec'  => 'Info',
-                                    'desc' => "This is the complete list of background tasks that WordPress and your plugins have scheduled to run automatically. Every plugin that needs to do something on a timer, send emails, clean up files, check for updates, sync data, registers a job here. WordPress fires them in the background when a visitor loads a page (pseudo-cron) or when a real server cron calls wp-cron.php.",
+                                    'desc' => 'This is the complete list of background tasks that WordPress and your plugins have scheduled to run automatically. Every plugin that needs to do something on a timer, send emails, clean up files, check for updates, sync data, registers a job here. WordPress fires them in the background when a visitor loads a page (pseudo-cron) or when a real server cron calls wp-cron.php.',
                                 ),
                                 array(
                                     'name' => 'Hook',
                                     'rec'  => 'Info',
-                                    'desc' => "The internal action name WordPress calls when the job fires. This is what you would search for in plugin code to find where the job is defined.",
+                                    'desc' => 'The internal action name WordPress calls when the job fires. This is what you would search for in plugin code to find where the job is defined.',
                                 ),
                                 array(
                                     'name' => 'Plugin',
                                     'rec'  => 'Info',
-                                    'desc' => "The plugin that registered this hook, resolved by matching the hook name prefix against a list of 200+ known plugins. The status badge shows whether the plugin is Active, Installed (inactive), Not installed (orphaned), or WordPress Core.",
+                                    'desc' => 'The plugin that registered this hook, resolved by matching the hook name prefix against a list of 200+ known plugins. The status badge shows whether the plugin is Active, Installed (inactive), Not installed (orphaned), or WordPress Core.',
                                 ),
                                 array(
                                     'name' => 'Schedule',
                                     'rec'  => 'Info',
-                                    'desc' => "How often the job repeats, e.g. hourly, twicedaily, daily. \"one-time\" means it fires once and does not recur.",
+                                    'desc' => 'How often the job repeats, e.g. hourly, twicedaily, daily. "one-time" means it fires once and does not recur.',
                                 ),
                                 array(
                                     'name' => 'Next Run',
                                     'rec'  => 'Info',
-                                    'desc' => "How long until the job fires next. \"Overdue\" means it was due in the past and has not fired yet, usually because there was no page visit to trigger pseudo-cron.",
+                                    'desc' => 'How long until the job fires next. "Overdue" means it was due in the past and has not fired yet, usually because there was no page visit to trigger pseudo-cron.',
                                 ),
                                 array(
                                     'name' => 'Last Run',
@@ -6770,7 +6687,7 @@ function cscc_render_page() {
                                 array(
                                     'name' => 'Orphaned jobs (Not installed)',
                                     'rec'  => 'Clean up',
-                                    'desc' => "If a plugin was deleted without being deactivated first, its cron entries remain in the database. They fire on schedule, find no callback, and waste resources. Use the bin icon to move them to the recycle bin.",
+                                    'desc' => 'If a plugin was deleted without being deactivated first, its cron entries remain in the database. They fire on schedule, find no callback, and waste resources. Use the bin icon to move them to the recycle bin.',
                                 ),
                             )
                         ); ?>

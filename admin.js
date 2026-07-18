@@ -3001,3 +3001,123 @@ function cscOrphanToggle(el, type) {
     }); // document.ready
 
 }(jQuery));
+
+(function() {
+    var el = document.getElementById('hm-weeks-left');
+    if (!el) return;
+    var obs = new MutationObserver(function() {
+        var t = el.textContent || '';
+        if (t.match(/\d{4,}.*wk/i) || t.match(/~\d+.*mo/i)) {
+            el.textContent = '>> 2 Years';
+            el.style.color = '#2e7d32';
+        }
+    });
+    obs.observe(el, { childList: true, characterData: true, subtree: true });
+})();
+(function() {
+    var target = document.getElementById('tab-site-health');
+    if (!target) return;
+    var obs = new MutationObserver(function() {
+        var bad = document.querySelectorAll('[style*="grid-column"]');
+        bad.forEach(function(el) {
+            if (el.textContent && el.textContent.indexOf('Max Resource') >= 0) {
+                el.remove();
+            }
+        });
+    });
+    obs.observe(target, { childList: true, subtree: true });
+})();
+jQuery(function($) {
+    var fmt = function(b) { if (b >= 1073741824) return (b/1073741824).toFixed(2)+' GB'; if (b >= 1048576) return (b/1048576).toFixed(1)+' MB'; return (b/1024).toFixed(0)+' KB'; };
+    var ragColors = {green:'#2e7d32',amber:'#e65100',red:'#c62828',grey:'#78909c'};
+    var ragBgs = {green:'#e8f5e9',amber:'#fff3e0',red:'#ffebee',grey:'#f5f5f5'};
+    var ragLabels = {green:'6+ months of disk space remaining',amber:'3 to 6 months of disk space remaining',red:'Less than 3 months of disk space remaining',grey:'Collecting weekly data to calculate trend'};
+
+    function cscHealthRender(d) {
+        var rag = d.disk_rag || 'grey';
+        $('#csc-health-rag-bar').css('background', ragBgs[rag]);
+        $('#csc-health-rag-dot').css('background', ragColors[rag]);
+        $('#csc-health-rag-label').text(rag === 'grey' ? 'Collecting Data' : rag.charAt(0).toUpperCase()+rag.slice(1)).css('color', ragColors[rag]);
+        $('#csc-health-rag-detail').text(ragLabels[rag] || '').css('color', ragColors[rag]);
+        $('#hm-disk-used').text(fmt(d.disk_used));
+        $('#hm-disk-free').text(fmt(d.disk_free));
+        $('#hm-disk-total').text(fmt(d.disk_total));
+        $('#hm-db-size').text(fmt(d.db_size));
+        $('#hm-growth').text(d.growth_per_week > 0 ? fmt(d.growth_per_week)+'/wk' : (d.weekly_count >= 2 ? 'Stable' : 'Collecting…'));
+        if (d.weeks_remaining > 104) {
+            $('#hm-weeks-left').text('>> 2 Years').css('color', '#2e7d32');
+        } else if (d.weeks_remaining > 0) {
+            var wl = Math.round(d.weeks_remaining);
+            var wlColor = d.disk_rag === 'red' ? '#c62828' : (d.disk_rag === 'amber' ? '#e65100' : '#2e7d32');
+            $('#hm-weeks-left').text(wl + ' weeks').css('color', wlColor);
+        } else if (d.growth_per_week <= 0 && d.weekly_count >= 2) {
+            $('#hm-weeks-left').text('Stable').css('color', '#2e7d32');
+        } else { $('#hm-weeks-left').text('—').css('color',''); }
+        var cpuNow = d.cpu_pct_now >= 0 ? d.cpu_pct_now+'%' : '—';
+        if (d.cpu_load_now >= 0) cpuNow += ' (load '+d.cpu_load_now.toFixed(2)+')';
+        $('#hm-cpu-now').text(cpuNow);
+        $('#hm-cpu-24h').text(d.cpu_pct_max_24h >= 0 ? d.cpu_pct_max_24h+'%' : '—');
+        $('#hm-cpu-7d').text(d.cpu_pct_max_7d >= 0 ? d.cpu_pct_max_7d+'%' : '—');
+        var memNow = d.mem_pct_now >= 0 ? d.mem_pct_now+'%' : '—';
+        if (d.mem_used_now >= 0 && d.mem_total > 0) memNow += ' ('+fmt(d.mem_used_now)+' / '+fmt(d.mem_total)+')';
+        $('#hm-mem-now').text(memNow);
+        $('#hm-mem-24h').text(d.mem_pct_max_24h >= 0 ? d.mem_pct_max_24h+'%' : '—');
+        $('#hm-mem-7d').text(d.mem_pct_max_7d >= 0 ? d.mem_pct_max_7d+'%' : '—');
+
+        if (d.max_resource_now !== undefined) {
+            $('[style*="grid-column:1/-1"]').filter(function(){ return $(this).text().indexOf('Max Resource') >= 0; }).remove();
+            var $memGrid = $('#hm-mem-7d').closest('[style*="grid"]');
+            if ($memGrid.length && !$('#hm-maxres-now').length) {
+                $memGrid.after('<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px">' +
+                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (now)</div><div class="csc-health-metric-value" id="hm-maxres-now">&middot;</div></div>' +
+                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (24h)</div><div class="csc-health-metric-value" id="hm-maxres-24h">&middot;</div></div>' +
+                    '<div class="csc-health-metric"><div class="csc-health-metric-label">Max Resource (7d)</div><div class="csc-health-metric-value" id="hm-maxres-7d">&middot;</div></div>' +
+                '</div>');
+            }
+            if (d.max_resource_now >= 0) $('#hm-maxres-now').text(d.max_resource_now + '%');
+            if (d.max_resource_24h >= 0) $('#hm-maxres-24h').text(d.max_resource_24h + '%');
+            if (d.max_resource_7d >= 0) $('#hm-maxres-7d').text(d.max_resource_7d + '%');
+        }
+
+        $('#hm-hourly-count').text(d.hourly_count);
+        $('#hm-weekly-count').text(d.weekly_count);
+        $('#hm-last-hourly').text(d.last_hourly || 'Never');
+        $('#hm-last-weekly').text(d.last_weekly || 'Never');
+        $('#hm-data-span').text(d.weeks_of_data > 0 ? d.weeks_of_data : '0');
+        $('#csc-health-loading').hide();
+        $('#csc-health-content').show();
+    }
+
+    if ($('#csc-health-loading').is(':visible')) {
+        $.post(CSC.ajax_url, { action: 'cscc_health_get', nonce: CSC.nonce }, function(resp) {
+            if (resp.success) cscHealthRender(resp.data);
+        });
+    }
+
+    $(document).on('click', '#btn-health-refresh', function() {
+        var $b = $(this).prop('disabled',true).html('⏳ Loading…');
+        $.post(CSC.ajax_url, { action: 'cscc_health_get', nonce: CSC.nonce }, function(resp) {
+            $b.prop('disabled',false).html('🔄 Refresh');
+            if (resp.success) cscHealthRender(resp.data);
+        }).fail(function(){ $b.prop('disabled',false).html('🔄 Refresh'); });
+    });
+
+    $(document).on('click', '#btn-sysstat-test', function() {
+        var $b = $(this).prop('disabled',true).html('⏳ Testing...');
+        var blue = {background:'#e3f2fd',borderColor:'#90caf9'};
+        var $box = $('#csc-sysstat-status').show().css(blue);
+        $('#csc-sysstat-label').text('Testing sysstat...').css('color','#1565c0');
+        $('#csc-sysstat-icon').text('⏳');
+        $('#csc-sysstat-detail').text('').css('color','#1565c0');
+        $('#csc-sysstat-instructions').hide();
+        $.post(CSC.ajax_url, { action: 'cscc_health_sysstat_test', nonce: CSC.nonce }, function(resp) {
+            $b.prop('disabled',false).html('🔧 Test Metrics');
+            $box.css(blue);
+            if (!resp.success) { $('#csc-sysstat-icon').text('❌'); $('#csc-sysstat-label').text('Test failed'); return; }
+            var d = resp.data;
+            $('#csc-sysstat-icon').text('✅');
+            $('#csc-sysstat-label').text('PHP snapshot metrics active');
+            $('#csc-sysstat-detail').text(d.cpu_count+' CPU core(s) | CPU '+d.cpu_pct_now+'% | Mem '+d.mem_pct_now+'%');
+        }).fail(function(){ $b.prop('disabled',false).html('🔧 Test Metrics'); $('#csc-sysstat-icon').text('❌'); $('#csc-sysstat-label').text('Network error'); });
+    });
+});

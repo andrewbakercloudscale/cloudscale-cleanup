@@ -10,7 +10,7 @@ defined( 'ABSPATH' ) || exit;
 defined( 'WP_UNINSTALL_PLUGIN' ) || exit;
 
 // Settings.
-$options = [
+$options = [ // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- file-scope variables in uninstall.php only; no namespace conflict risk
     'cscc_loaded_version',
     'cscc_clean_revisions',
     'cscc_clean_drafts',
@@ -52,7 +52,7 @@ $options = [
     'cscc_cron_recycle_bin',
 ];
 
-foreach ( $options as $option ) {
+foreach ( $options as $option ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedVariableFound -- file-scope variables in uninstall.php only; no namespace conflict risk
     delete_option( $option );
 }
 

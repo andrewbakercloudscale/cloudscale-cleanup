@@ -140,6 +140,51 @@ fi
 echo "Cross-file methods: OK"
 echo ""
 
+# ── WP bootstrap safety check ────────────────────────────────────────────────
+# Catches calls to functions that require a bootstrapped WordPress environment
+# (user auth, DB, etc.) made at global scope in the main plugin PHP file.
+# These pass php -l but silently misbehave or fatal-crash on real page loads —
+# e.g. current_user_can() called before wp_set_current_user() always returns false,
+# and in some WP versions can trigger a PHP fatal that causes a 503.
+echo "Checking WP bootstrap safety..."
+BOOTSTRAP_ERRORS=0
+_BOOTSTRAP_FORBIDDEN='current_user_can,is_user_logged_in,wp_get_current_user,get_current_user_id,check_admin_referer,check_ajax_referer,is_multisite,switch_to_blog,restore_current_blog'
+while IFS= read -r -d '' phpfile; do
+    _result=$(php -r "
+\$file = '$phpfile';
+\$tokens = token_get_all(file_get_contents(\$file));
+// Scan only the leading global-scope preamble — tokens before the first
+// top-level class/function/interface/trait declaration. Everything after that
+// is inside a declaration body and is safe to call WP bootstrap functions.
+\$forbidden = explode(',', '$_BOOTSTRAP_FORBIDDEN');
+\$errors    = [];
+foreach (\$tokens as \$tok) {
+    if (!is_array(\$tok)) continue;
+    \$type = \$tok[0];
+    // Stop scanning at the first top-level declaration.
+    if (in_array(\$type, [T_CLASS, T_FUNCTION, T_INTERFACE, T_TRAIT])) break;
+    if (\$type === T_STRING && in_array(\$tok[1], \$forbidden)) {
+        \$errors[] = 'BOOTSTRAP: ' . basename(\$file) . ':' . \$tok[2]
+            . ': ' . \$tok[1] . '() in plugin preamble — requires bootstrapped WP, '
+            . 'use a hook (add_action) or check WP_ADMIN/REST_REQUEST/\$_COOKIE instead';
+    }
+}
+foreach (\$errors as \$e) echo \$e . PHP_EOL;
+exit(empty(\$errors) ? 0 : 1);
+" 2>&1 || true)
+    if [ -n "$_result" ]; then
+        echo "$_result"
+        BOOTSTRAP_ERRORS=1
+    fi
+done < <(find "$REPO_DIR" -maxdepth 1 -name "*.php" -print0 2>/dev/null)
+if [ "$BOOTSTRAP_ERRORS" -ne 0 ]; then
+    echo ""
+    echo "ERROR: WP bootstrap safety violations — fix before building."
+    exit 1
+fi
+echo "WP bootstrap safety: OK"
+echo ""
+
 # ── PHPCS WordPress standards check ──────────────────────────────────────────
 _PHPCS=""
 for _candidate in \
@@ -176,14 +221,37 @@ PHPCS_OUT=$("$_PHPCS" \
     --standard="$REPO_DIR/phpcs.xml" \
     --severity=5 \
     --extensions=php \
+    -s \
     "$REPO_DIR" 2>&1 || true)
 echo "$PHPCS_OUT"
 echo ""
-if echo "$PHPCS_OUT" | grep -qE "\| ERROR.*WordPress\.(Security|DB\.PreparedSQL)"; then
-    echo "ERROR: PHPCS security errors found — fix before building."
+
+# Count violations. grep|wc pipeline always exits 0 — safe under set -e.
+_PHPCS_ERRS=$(echo "$PHPCS_OUT" | grep -F "| ERROR " | wc -l | tr -d '[:space:]')
+_PHPCS_WARNS=$(echo "$PHPCS_OUT" | grep -F "| WARNING " | wc -l | tr -d '[:space:]')
+
+# Block on any ERROR — WordPress.org reviewers reject plugins with any PHPCS error.
+# Rules already suppressed in phpcs.xml will not appear here.
+if [ "${_PHPCS_ERRS:-0}" -gt 0 ]; then
+    echo "ERROR: PHPCS found ${_PHPCS_ERRS} error(s) — fix before building (WP.org rejects all errors)."
     exit 1
 fi
-echo "PHPCS: OK (no blocking errors)"
+
+# Block on development/discouraged-function warnings — WP.org explicitly rejects
+# var_dump(), error_log(), eval(), base64_decode() etc. even when flagged as warnings.
+if echo "$PHPCS_OUT" | grep -qE "WordPress\.PHP\.(DevelopmentFunctions|DiscouragedPHPFunctions)"; then
+    echo "ERROR: Development or discouraged PHP functions flagged — remove before WordPress.org submission."
+    exit 1
+fi
+
+# Non-blocking warning summary — must be zero before WordPress.org submission.
+if [ "${_PHPCS_WARNS:-0}" -gt 0 ]; then
+    echo "PHPCS: OK — 0 errors, ${_PHPCS_WARNS} warning(s) (must be clean before WP.org submission)"
+    echo "  Warning breakdown:"
+    echo "$PHPCS_OUT" | grep -oE '\([A-Za-z]+\.[A-Za-z.]+\)' | tr -d '()' | sort | uniq -c | sort -rn | head -8 | sed 's/^/    /'
+else
+    echo "PHPCS: OK — 0 errors, 0 warnings"
+fi
 echo ""
 
 # Create temp directory with plugin name as wrapper
@@ -197,6 +265,7 @@ rsync -a \
   --exclude='rollback-wordpress.sh' \
   --exclude='node_modules' --exclude='package.json' --exclude='package-lock.json' \
   --exclude='playwright.config.js' --exclude='tests' --exclude='test-results' --exclude='playwright-report' \
+  --exclude='phpcs.xml' \
   --exclude='terraclaim' \
   --exclude='docs' \
   --exclude='generate-help-docs.sh' \
