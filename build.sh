@@ -49,9 +49,20 @@ ESC_VER=$(printf '%s\n' "$CURRENT_VER" | sed 's/\./\\./g')
 # Word-boundary anchors prevent matching version-like substrings inside
 # longer numeric runs (e.g. the "2.5.65" inside a hypothetical "12.5.654").
 echo "Version bump: $CURRENT_VER → $NEW_VER"
+# Targeted bump ONLY. The old blanket replace-everywhere sed rewrote EVERY
+# occurrence of the previous version — historical @since/@deprecated docblock
+# tags and past readme.txt changelog headings included — so release history
+# was silently rewritten on every build.
+sed -i '' "s/^\( \* Version:[[:space:]]*\)${ESC_VER}\$/\1${NEW_VER}/" "$MAIN_PHP"
+sed -i '' "s/\(define([[:space:]]*'CLOUDSCALE_CLEANUP_VERSION',[[:space:]]*'\)${ESC_VER}'/\1${NEW_VER}'/" "$REPO_DIR/cloudscale-cleanup.php"
+sed -i '' "s/^\(Stable tag:[[:space:]]*\)${ESC_VER}\$/\1${NEW_VER}/" "$REPO_DIR/readme.txt"
+# Promote ONLY the topmost changelog heading written for the pre-bump version;
+# headings for past releases are never dragged forward.
+sed -i '' "1,/^= ${ESC_VER} =\$/ s/^= ${ESC_VER} =\$/= ${NEW_VER} =/" "$REPO_DIR/readme.txt"
+# JS @version headers.
 while IFS= read -r vfile; do
-  sed -i '' "s/[[:<:]]${ESC_VER}[[:>:]]/$NEW_VER/g" "$vfile"
-done < <(grep -rl "$CURRENT_VER" "$REPO_DIR" --include="*.php" --include="*.js" --include="*.txt" 2>/dev/null | grep -v "\.git" | grep -v "/repo/")
+  sed -i '' "s/\(@version[[:space:]]*\)${ESC_VER}\$/\1${NEW_VER}/" "$vfile"
+done < <(grep -rl "@version[[:space:]]*$CURRENT_VER" "$REPO_DIR" --include="*.js" 2>/dev/null | grep -v "\.git" | grep -v "/repo/")
 # Sync readme.txt and main PHP into repo/ so SVN trunk always has correct version.
 cp "$REPO_DIR/readme.txt" "$REPO_DIR/repo/readme.txt"
 sed -i '' "s/^ \* Version:.*/ * Version:     $NEW_VER/" "$REPO_DIR/repo/cloudscale-cleanup.php"
