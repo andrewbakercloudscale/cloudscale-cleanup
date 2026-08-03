@@ -227,15 +227,35 @@ if [ -z "$_PHPCS" ] || [ ! -x "$_PHPCS" ]; then
 fi
 
 echo "Running PHPCS (WordPress standard)..."
+# memory_limit: PHP's 128M default is not enough to tokenise the whole tree — the
+# main plugin file alone is several hundred KB and the run dies partway through it.
+# Measured need across these plugins is ~256M today; 1024M leaves headroom to grow.
+set +e
 PHPCS_OUT=$("$_PHPCS" \
-    -d memory_limit=512M \
+    -d memory_limit=1024M \
     --standard="$REPO_DIR/phpcs.xml" \
     --severity=5 \
     --extensions=php \
     -s \
-    "$REPO_DIR" 2>&1 || true)
+    "$REPO_DIR" 2>&1)
+_PHPCS_RC=$?
+set -e
 echo "$PHPCS_OUT"
 echo ""
+
+# A PHPCS run that DIED looks identical to a clean one further down: it emits a
+# stack trace with no "| ERROR " lines, and the old `|| true` threw the exit code
+# away — so the build announced "0 errors, 0 warnings" having checked only part of
+# the tree. That is exactly how a real WPCS error survived every local build and
+# was first reported by WordPress.org's Plugin Check.
+# Exit codes: 0 = clean, 1/2 = issues found, 3 = processing error, 255 = PHP fatal.
+if [ "$_PHPCS_RC" -gt 2 ]; then
+    echo "ERROR: PHPCS did not complete (exit ${_PHPCS_RC}). Its output is truncated, NOT clean."
+    if echo "$PHPCS_OUT" | grep -qi "out of memory"; then
+        echo "  Cause: PHPCS ran out of memory — raise -d memory_limit above in this script."
+    fi
+    exit 1
+fi
 
 # Count violations. grep|wc pipeline always exits 0 — safe under set -e.
 _PHPCS_ERRS=$(echo "$PHPCS_OUT" | grep -F "| ERROR " | wc -l | tr -d '[:space:]')
