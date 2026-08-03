@@ -226,6 +226,31 @@ if [ -z "$_PHPCS" ] || [ ! -x "$_PHPCS" ]; then
     exit 1
 fi
 
+# ── readme.txt section limits ────────────────────────────────────────────────
+# WordPress.org TRUNCATES an over-long readme section instead of rejecting it, so
+# the plugin page silently loses content and nothing in the build complains. This
+# runs after the version bump above, because that rewrites readme.txt.
+#
+# Two earlier hand-rolled versions of this check passed while the section was in
+# fact being truncated, because they encoded the rule wrongly: the limit is counted
+# in WORDS (Plugin Check's "2500 characters" message is misleading), and every
+# section wordpress.org does not recognise -- "External services", "Credits" -- is
+# folded into other_notes and then added onto DESCRIPTION before trimming. The
+# shared script is the single source of truth; do not re-implement the rule here.
+_README_CHECK="$GITHUB_DIR/shared-build-tools/check-readme-limits.php"
+echo "Checking readme.txt section limits..."
+if [ ! -f "$_README_CHECK" ]; then
+    # Fail loudly: a silently-missing checker would recreate the exact hole this closes.
+    echo "ERROR: readme limit checker not found at $_README_CHECK"
+    exit 1
+fi
+if ! php "$_README_CHECK" "$REPO_DIR/readme.txt"; then
+    echo "ERROR: readme.txt would be truncated on WordPress.org (details above)."
+    exit 1
+fi
+echo "readme.txt section limits: OK"
+echo ""
+
 echo "Running PHPCS (WordPress standard)..."
 # memory_limit: PHP's 128M default is not enough to tokenise the whole tree — the
 # main plugin file alone is several hundred KB and the run dies partway through it.
