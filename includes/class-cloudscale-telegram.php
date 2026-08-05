@@ -61,11 +61,36 @@ class CloudScale_Telegram {
 	 * @param int|null $ts Unix timestamp; current time when null.
 	 */
 	public static function local_time( ?int $ts = null ): string {
-		$ts = $ts ?? time();
-		$out = wp_date( 'Y-m-d H:i:s T', $ts );
+		$ts   = $ts ?? time();
+		$when = wp_date( 'Y-m-d H:i:s', $ts );
 		// wp_date() returns false if the timezone is unusable; never let a broken
 		// setting cost us the whole alert.
-		return is_string( $out ) && '' !== $out ? $out : gmdate( 'Y-m-d H:i:s', $ts ) . ' UTC';
+		if ( ! is_string( $when ) || '' === $when ) {
+			return gmdate( 'Y-m-d H:i:s', $ts ) . ' UTC';
+		}
+		return $when . ' ' . self::tz_label( $ts );
+	}
+
+	/**
+	 * The timezone label to print: a real zone abbreviation when there is one.
+	 *
+	 * Settings → General accepts either a named zone (Africa/Johannesburg, which
+	 * makes wp_date('T') produce SAST) or a bare UTC offset. With a bare offset there
+	 * IS no zone name, and wp_date('T') answers "GMT+0200" — which reads as a GMT
+	 * time to anyone scanning an alert, and GMT is not what the clock is showing.
+	 *
+	 * So an offset-shaped label is reduced to the offset alone: "+02:00". Not
+	 * guessed at — several zones share +02:00 and picking one would invent a fact.
+	 * Set a named zone and this returns its abbreviation instead, with no code change.
+	 *
+	 * @param int|null $ts Timestamp the label applies to (DST-dependent zones).
+	 */
+	public static function tz_label( ?int $ts = null ): string {
+		$abbr = (string) wp_date( 'T', $ts ?? time() );
+		if ( preg_match( '/^(?:GMT|UTC)?\s*([+-])(\d{1,2}):?(\d{2})?$/', $abbr, $m ) ) {
+			return $m[1] . str_pad( $m[2], 2, '0', STR_PAD_LEFT ) . ':' . ( $m[3] ?? '00' );
+		}
+		return '' !== $abbr ? $abbr : 'UTC';
 	}
 
 	/**
