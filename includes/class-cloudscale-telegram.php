@@ -52,6 +52,57 @@ class CloudScale_Telegram {
 	}
 
 	/**
+	 * The site's own clock, with the zone named: "2026-08-05 07:02:11 SAST".
+	 *
+	 * wp_date() applies the timezone configured in Settings → General, and the T
+	 * format character supplies the abbreviation, so the reader never has to do
+	 * arithmetic or guess which zone a bare time is in.
+	 *
+	 * @param int|null $ts Unix timestamp; current time when null.
+	 */
+	public static function local_time( ?int $ts = null ): string {
+		$ts = $ts ?? time();
+		$out = wp_date( 'Y-m-d H:i:s T', $ts );
+		// wp_date() returns false if the timezone is unusable; never let a broken
+		// setting cost us the whole alert.
+		return is_string( $out ) && '' !== $out ? $out : gmdate( 'Y-m-d H:i:s', $ts ) . ' UTC';
+	}
+
+	/**
+	 * Rewrite UTC timestamps inside an alert body into the site's local zone.
+	 *
+	 * Alerts quote times from places that are UTC by construction — PHP's error log
+	 * writes "[04-Aug-2026 20:40:15 UTC]", and several of our own messages used
+	 * gmdate(). An alert that says one thing in the footer and another in the body
+	 * makes the reader do timezone arithmetic at exactly the moment they can least
+	 * afford to, so both are converted to the same clock.
+	 *
+	 * Only strings explicitly labelled UTC are touched. A time with no zone on it
+	 * is left alone rather than guessed at.
+	 */
+	private static function localise_utc_stamps( string $text ): string {
+		// PHP error-log prefix: [04-Aug-2026 20:40:15 UTC]
+		$text = (string) preg_replace_callback(
+			'/\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2}) UTC\]/',
+			static function ( array $m ): string {
+				$ts = strtotime( $m[1] . ' UTC' );
+				return false === $ts ? $m[0] : '[' . self::local_time( $ts ) . ']';
+			},
+			$text
+		);
+		// ISO-ish: 2026-08-05 02:30:01 UTC
+		$text = (string) preg_replace_callback(
+			'/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})Z?\s+UTC\b/',
+			static function ( array $m ): string {
+				$ts = strtotime( str_replace( 'T', ' ', $m[1] ) . ' UTC' );
+				return false === $ts ? $m[0] : self::local_time( $ts );
+			},
+			$text
+		);
+		return $text;
+	}
+
+	/**
 	 * Send a Telegram message. Returns true on success.
 	 *
 	 * @param string $text    Message body.
@@ -65,7 +116,12 @@ class CloudScale_Telegram {
 			return false;
 		}
 
-		$full = self::alert_prefix( $source, $level ) . $text;
+		// Local time on EVERY alert, stamped here rather than at ~20 call sites so a
+		// new alert cannot ship without one. Times quoted inside the body are
+		// converted to the same clock — see localise_utc_stamps().
+		$full = self::alert_prefix( $source, $level )
+			. self::localise_utc_stamps( $text )
+			. "\n\n" . self::local_time();
 
 		$response = wp_remote_post(
 			'https://api.telegram.org/bot' . rawurlencode( $token ) . '/sendMessage',

@@ -251,6 +251,24 @@ fi
 echo "readme.txt section limits: OK"
 echo ""
 
+# ── Telegram alerts carry local time ────────────────────────────────────────
+# Alerts arrive on a phone, at night, read by someone in the site's own timezone —
+# and they quoted UTC ("Last heartbeat: 2026-08-05 02:30:01 UTC" during a real
+# outage), so the reader had to do arithmetic before judging how old a failure was.
+# Stamped centrally in CloudScale_Telegram::send() so a new alert cannot ship
+# without one; asserted against THIS plugin's synced copy so drift fails here.
+_TG_TIME_CHECK="$GITHUB_DIR/shared-build-tools/check-telegram-local-time.php"
+echo "Checking Telegram alerts carry local time..."
+if [ ! -f "$_TG_TIME_CHECK" ]; then
+    echo "ERROR: telegram local-time checker not found at $_TG_TIME_CHECK"
+    exit 1
+fi
+if ! php "$_TG_TIME_CHECK" "$REPO_DIR"; then
+    echo "ERROR: Telegram alerts would go out without local time (details above)."
+    exit 1
+fi
+echo ""
+
 echo "Running PHPCS (WordPress standard)..."
 # memory_limit: PHP's 128M default is not enough to tokenise the whole tree — the
 # main plugin file alone is several hundred KB and the run dies partway through it.
