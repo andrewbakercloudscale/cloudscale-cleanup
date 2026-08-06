@@ -58,7 +58,22 @@ sed -i '' "s/\(define([[:space:]]*'CLOUDSCALE_CLEANUP_VERSION',[[:space:]]*'\)${
 sed -i '' "s/^\(Stable tag:[[:space:]]*\)${ESC_VER}\$/\1${NEW_VER}/" "$REPO_DIR/readme.txt"
 # Promote ONLY the topmost changelog heading written for the pre-bump version;
 # headings for past releases are never dragged forward.
-sed -i '' "1,/^= ${ESC_VER} =\$/ s/^= ${ESC_VER} =\$/= ${NEW_VER} =/" "$REPO_DIR/readme.txt"
+# A new changelog entry is written as "= Unreleased =" and this stamps it with the
+# version the build produces. No other heading is ever relabelled.
+#
+# This used to promote the topmost heading matching the PRE-bump version, assuming
+# such a heading could only be a freshly written entry. It cannot tell that apart
+# from the previous release's own heading, which is legitimately labelled with that
+# version, so every build that added no entry dragged the last release's heading
+# forward by one. In the SEO plugin a narration entry travelled 4.21.459 -> .460 ->
+# .461 -> .462 that way, and the published changelog credited the current release
+# with a change that had shipped three releases earlier.
+if grep -q '^= Unreleased =$' "$REPO_DIR/readme.txt"; then
+  sed -i '' "1,/^= Unreleased =\$/ s/^= Unreleased =\$/= ${NEW_VER} =/" "$REPO_DIR/readme.txt"
+  echo "  readme.txt changelog: promoted '= Unreleased =' to '= ${NEW_VER} ='"
+else
+  echo "  readme.txt changelog: no '= Unreleased =' entry, headings left untouched"
+fi
 # JS @version headers.
 while IFS= read -r vfile; do
   sed -i '' "s/\(@version[[:space:]]*\)${ESC_VER}\$/\1${NEW_VER}/" "$vfile"
