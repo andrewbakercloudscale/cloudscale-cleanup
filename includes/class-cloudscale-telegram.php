@@ -79,15 +79,57 @@ class CloudScale_Telegram {
 	 * IS no zone name, and wp_date('T') answers "GMT+0200" — which reads as a GMT
 	 * time to anyone scanning an alert, and GMT is not what the clock is showing.
 	 *
-	 * So an offset-shaped label is reduced to the offset alone: "+02:00". Not
-	 * guessed at — several zones share +02:00 and picking one would invent a fact.
-	 * Set a named zone and this returns its abbreviation instead, with no code change.
+	 * An offset-shaped label is therefore resolved to a zone abbreviation, via PHP's
+	 * own offset→zone table, rather than printed as "+02:00": alerts should name the
+	 * clock they are quoting, and a bare offset makes the reader do the work. Several
+	 * zones share an offset and PHP returns the canonical one, so the abbreviation is
+	 * right for the offset even where the zone id is not the site's own — which is why
+	 * the *offset* is what gets resolved and never invented from anything else. Set a
+	 * named zone in Settings → General and this returns its own abbreviation directly.
 	 *
 	 * @param int|null $ts Timestamp the label applies to (DST-dependent zones).
 	 */
 	public static function tz_label( ?int $ts = null ): string {
-		$abbr = (string) wp_date( 'T', $ts ?? time() );
+		$ts   = $ts ?? time();
+		$abbr = (string) wp_date( 'T', $ts );
 		if ( preg_match( '/^(?:GMT|UTC)?\s*([+-])(\d{1,2}):?(\d{2})?$/', $abbr, $m ) ) {
+			$seconds = ( (int) $m[2] * 3600 ) + ( (int) ( $m[3] ?? 0 ) * 60 );
+			if ( '-' === $m[1] ) {
+				$seconds = -$seconds;
+			}
+			// The candidate zone's offset AT THIS INSTANT must equal the offset we are
+			// labelling. Without that check, +02:00 resolved to a zone whose
+			// abbreviation was EEST — a real name for a clock that is +03:00 in
+			// August, printed next to a time that is +02:00. A label contradicting
+			// the timestamp it labels is worse than a bare offset.
+			$moment     = new DateTime( '@' . $ts );
+			$candidates = array();
+			foreach ( array( 0, 1 ) as $dst ) {
+				$guess = timezone_name_from_abbr( '', $seconds, $dst );
+				if ( is_string( $guess ) && '' !== $guess ) {
+					$candidates[] = $guess;
+				}
+			}
+			// Nothing from the abbreviation table fits, so ask the zone list directly.
+			$candidates = array_merge( $candidates, timezone_identifiers_list() );
+			foreach ( $candidates as $zone ) {
+				try {
+					$tz = new DateTimeZone( $zone );
+				} catch ( \Exception $e ) {
+					unset( $e );
+					continue;
+				}
+				if ( $tz->getOffset( $moment ) !== $seconds ) {
+					continue;
+				}
+				$named = $moment->setTimezone( $tz )->format( 'T' );
+				// A zone whose own label is offset-shaped puts us back where we
+				// started, so keep looking.
+				if ( is_string( $named ) && '' !== $named && ! preg_match( '/^(?:GMT|UTC)?[+-]/', $named ) ) {
+					return $named;
+				}
+			}
+			// Last resort: the offset, never "GMT+0200".
 			return $m[1] . str_pad( $m[2], 2, '0', STR_PAD_LEFT ) . ':' . ( $m[3] ?? '00' );
 		}
 		return '' !== $abbr ? $abbr : 'UTC';
@@ -106,9 +148,13 @@ class CloudScale_Telegram {
 	 * is left alone rather than guessed at.
 	 */
 	private static function localise_utc_stamps( string $text ): string {
-		// PHP error-log prefix: [04-Aug-2026 20:40:15 UTC]
+		// PHP error-log prefix: [04-Aug-2026 20:40:15 UTC] — and GMT, which is what
+		// PHP actually emits when date.timezone is UTC. Matching only "UTC" is why
+		// alerts kept showing a GMT stamp after every other clock had been localised:
+		// the copy was correct everywhere we controlled and wrong on the one line we
+		// were quoting verbatim out of the log.
 		$text = (string) preg_replace_callback(
-			'/\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2}) UTC\]/',
+			'/\[(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2}:\d{2}) (?:UTC|GMT)\]/',
 			static function ( array $m ): string {
 				$ts = strtotime( $m[1] . ' UTC' );
 				return false === $ts ? $m[0] : '[' . self::local_time( $ts ) . ']';
@@ -117,7 +163,7 @@ class CloudScale_Telegram {
 		);
 		// ISO-ish: 2026-08-05 02:30:01 UTC
 		$text = (string) preg_replace_callback(
-			'/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})Z?\s+UTC\b/',
+			'/(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})Z?\s+(?:UTC|GMT)\b/',
 			static function ( array $m ): string {
 				$ts = strtotime( str_replace( 'T', ' ', $m[1] ) . ' UTC' );
 				return false === $ts ? $m[0] : self::local_time( $ts );
