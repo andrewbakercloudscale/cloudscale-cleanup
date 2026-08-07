@@ -24,6 +24,36 @@ class CloudScale_Telegram {
 	const OPTION_TOKEN   = 'cloudscale_telegram_bot_token'; // pragma:allow-secret
 	const OPTION_CHAT_ID = 'cloudscale_telegram_chat_id';
 
+	/**
+	 * One switch that silences every alert from every plugin on this install.
+	 *
+	 * Until this existed there was no way to mute a host. send() gated only on the
+	 * token and chat id being present, and each call site checked its own feature
+	 * toggle — so `csdt_notify_telegram_enabled` silenced the paths that happened to
+	 * consult it and nothing else. CSDT_Test_Accounts::send_security_alert() was one
+	 * of the ones that did not.
+	 *
+	 * That is a problem specifically for a COPY. A restored DR or QA instance keeps
+	 * production's site URL, database and bot token, so it pages the owner as though
+	 * it were production, and there was nothing to flip to stop it: the only lever
+	 * was clearing the shared token, which also disarms the real site. On 2026-08-07
+	 * a QA copy on the DR host emitted hundreds of "elevated test session minted"
+	 * alerts while a Playwright suite ran against it, and no setting anywhere could
+	 * shut it up.
+	 *
+	 * So this is deliberately the FIRST thing send() checks, and it is checked here
+	 * rather than at the call sites, because the point is that no future call site
+	 * can forget it. dr-restore.sh sets it on every copy it builds.
+	 */
+	const OPTION_MUTED = 'cloudscale_alerts_muted';
+
+	/**
+	 * Is this install muted? True on restored copies (see OPTION_MUTED).
+	 */
+	public static function is_muted(): bool {
+		return '1' === (string) get_option( self::OPTION_MUTED, '' );
+	}
+
 	public static function is_configured(): bool {
 		return ! empty( get_option( self::OPTION_TOKEN ) ) && ! empty( get_option( self::OPTION_CHAT_ID ) );
 	}
@@ -181,6 +211,13 @@ class CloudScale_Telegram {
 	 * @param string $level   Alert level: info, warning, error, critical.
 	 */
 	public static function send( string $text, string $source = '', string $level = 'info' ): bool {
+		// Before anything else, and before any call site's own toggle: a muted install
+		// sends nothing at all. See OPTION_MUTED for why this belongs here and not at
+		// the ~20 call sites.
+		if ( self::is_muted() ) {
+			return false;
+		}
+
 		$token   = trim( (string) get_option( self::OPTION_TOKEN, '' ) );
 		$chat_id = trim( (string) get_option( self::OPTION_CHAT_ID, '' ) );
 		if ( ! $token || ! $chat_id ) {
