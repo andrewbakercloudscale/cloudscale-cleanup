@@ -82,6 +82,100 @@ class CloudScale_Telegram {
 	}
 
 	/**
+	 * Identify the machine that produced this alert.
+	 *
+	 * Stamped here rather than at the ~110 call sites across five plugins, for
+	 * the same reason the mute check and the timestamp live here: a new call
+	 * site cannot ship without it.
+	 *
+	 * The domain in alert_prefix() cannot do this job. As OPTION_MUTED's
+	 * docblock records, a restored DR or QA copy keeps production's site URL,
+	 * database and bot token, so every clone claims to be production. The
+	 * machine hostname is the field that actually differs, which is why it
+	 * leads. On 2026-08-07 hundreds of alerts from a QA copy on the DR host
+	 * were indistinguishable from production's, and the only address in them
+	 * was 172.20.0.1 — that copy's Docker gateway. That is why an unroutable
+	 * address is now labelled rather than presented as the visitor's IP.
+	 */
+	private static function alert_origin(): string {
+		$host = gethostname();
+		if ( ! is_string( $host ) || '' === $host ) {
+			$host = 'unknown-host';
+		}
+
+		$server_ip = isset( $_SERVER['SERVER_ADDR'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['SERVER_ADDR'] ) )
+			: '';
+		if ( ! filter_var( $server_ip, FILTER_VALIDATE_IP ) ) {
+			$server_ip = '';
+		}
+
+		$lines   = array();
+		$lines[] = 'Host: ' . $host . ( '' !== $server_ip ? ' (' . $server_ip . ')' : '' );
+		$lines[] = 'From: ' . self::trigger_source();
+
+		$method = isset( $_SERVER['REQUEST_METHOD'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) )
+			: '';
+		$uri = isset( $_SERVER['REQUEST_URI'] )
+			? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) )
+			: '';
+		if ( '' !== $method || '' !== $uri ) {
+			// Long query strings would push the body toward Telegram's 4096-char
+			// limit and truncate the alert itself, which matters more than the tail
+			// of a URL.
+			$request = trim( $method . ' ' . $uri );
+			if ( strlen( $request ) > 120 ) {
+				$request = substr( $request, 0, 117 ) . '...';
+			}
+			$lines[] = 'Request: ' . $request;
+		}
+
+		return "\n" . implode( "\n", $lines );
+	}
+
+	/**
+	 * What triggered this alert: a request with a client IP, or a background
+	 * context that genuinely has no client. Never invent an address for the
+	 * latter — a wrong IP is worse than an admitted absence.
+	 */
+	private static function trigger_source(): string {
+		if ( defined( 'WP_CLI' ) && WP_CLI ) {
+			return 'WP-CLI (no client IP)';
+		}
+		if ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
+			return 'wp-cron (no client IP)';
+		}
+
+		// Prefer the validated helper: it honours HTTP_CF_CONNECTING_IP and
+		// X-Forwarded-For only when the immediate peer is a trusted proxy, so an
+		// attacker cannot dictate what this alert reports. It lives in Cyber
+		// DevTools, hence the guard — this file ships in five plugins.
+		$ip = '';
+		if ( is_callable( array( 'CloudScale_DevTools', 'get_client_ip' ) ) ) {
+			$ip = (string) call_user_func( array( 'CloudScale_DevTools', 'get_client_ip' ) );
+		}
+		if ( '' === $ip && isset( $_SERVER['REMOTE_ADDR'] ) ) {
+			$ip = sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) );
+		}
+		if ( ! filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+			return 'no client IP (background context)';
+		}
+
+		// A private or loopback address is the container gateway or a reverse
+		// proxy, not the visitor. Label it so it is never read as the origin.
+		$is_public = (bool) filter_var(
+			$ip,
+			FILTER_VALIDATE_IP,
+			FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+		);
+
+		return $is_public
+			? $ip
+			: $ip . ' (private address - proxy/container gateway, not the visitor)';
+	}
+
+	/**
 	 * The site's own clock, with the zone named: "2026-08-05 07:02:11 SAST".
 	 *
 	 * wp_date() applies the timezone configured in Settings → General, and the T
@@ -224,11 +318,19 @@ class CloudScale_Telegram {
 			return false;
 		}
 
-		// Local time on EVERY alert, stamped here rather than at ~20 call sites so a
-		// new alert cannot ship without one. Times quoted inside the body are
-		// converted to the same clock — see localise_utc_stamps().
+		// Local time and originating host on EVERY alert, stamped here rather than
+		// at the call sites so a new alert cannot ship without either. Times quoted
+		// inside the body are converted to the same clock — see
+		// localise_utc_stamps(); see alert_origin() for why the site domain alone
+		// cannot attribute a clone.
+		// Order matters: the origin block goes BEFORE the timestamp because
+		// check-telegram-local-time.php asserts the message ENDS with a zone-named
+		// local time. That invariant is worth keeping — it is what proves no alert
+		// ever ships without a readable clock — so attribution slots in above it
+		// rather than the gate being relaxed to accommodate this.
 		$full = self::alert_prefix( $source, $level )
 			. self::localise_utc_stamps( $text )
+			. "\n" . self::alert_origin()
 			. "\n\n" . self::local_time();
 
 		$response = wp_remote_post(
