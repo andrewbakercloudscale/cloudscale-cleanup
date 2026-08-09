@@ -164,6 +164,26 @@ if [[ "$XFILE_ERRORS" -ne 0 ]]; then
     exit 1
 fi
 echo "Cross-file methods: OK"
+
+# ── Static call visibility ───────────────────────────────────────────────────
+# The cross-file check above answers "does a method with this name exist?" by grepping
+# for `function name(`, which a PRIVATE method satisfies perfectly. So
+# OtherClass::private_helper() passes it, passes php -l, passes PHPCS, and fatals the
+# first time that line runs. Surfaced on 2026-08-09 by
+#   "Uncaught Error: Call to private method CSDT_Auto_Block::admin_session_ips()"
+# which came from an operator's `wp eval-file` rather than shipped code — so nothing
+# was broken, and nothing would have caught it if it had been.
+_VIS_CHECK="$GITHUB_DIR/shared-build-tools/check-static-call-visibility.php"
+echo "Checking static call visibility..."
+if [ ! -f "$_VIS_CHECK" ]; then
+    echo "ERROR: static call visibility checker not found at $_VIS_CHECK"
+    exit 1
+fi
+if ! php "$_VIS_CHECK" "$REPO_DIR"; then
+    echo "ERROR: a ClassName::method() call cannot reach its target (details above)."
+    exit 1
+fi
+echo ""
 echo ""
 
 # ── WP bootstrap safety check ────────────────────────────────────────────────
