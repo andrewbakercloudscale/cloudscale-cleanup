@@ -266,6 +266,25 @@ fi
 echo "readme.txt section limits: OK"
 echo ""
 
+# ── Shared class copies must match their canonical source ────────────────────
+# CloudScale_Telegram and the model-name map are shared by all five plugins and guarded by
+# class_exists(), so exactly ONE copy loads at runtime. On the live install that copy belongs
+# to cloudscale-backup — so a change to any other plugin's copy is invisible at runtime and
+# would deploy as a feature that quietly does nothing. Edit shared-admin-ui/<file> and run
+# shared-admin-ui/sync-admin-css.sh; never edit a plugin's copy directly.
+_SHARED_COPIES_CHECK="$GITHUB_DIR/shared-build-tools/check-shared-copies.php"
+if [ ! -f "$_SHARED_COPIES_CHECK" ]; then
+    echo "ERROR: shared-copy checker not found at $_SHARED_COPIES_CHECK"
+    exit 1
+fi
+if ! php "$_SHARED_COPIES_CHECK" "$GITHUB_DIR"; then
+    echo ""
+    echo "ERROR: a shared class copy has drifted from shared-admin-ui/ — build blocked."
+    exit 1
+fi
+echo ""
+
+
 # ── Telegram alerts carry local time ────────────────────────────────────────
 # Alerts arrive on a phone, at night, read by someone in the site's own timezone —
 # and they quoted UTC ("Last heartbeat: 2026-08-05 02:30:01 UTC" during a real
