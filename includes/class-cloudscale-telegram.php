@@ -61,8 +61,20 @@ class CloudScale_Telegram {
 	/**
 	 * Build the alert prefix line: "{emoji} Domain : Source\nLEVEL\n\n"
 	 *
+	 * The marker and the LEVEL word beside it must never disagree, and they did.
+	 * The map held only info/warning/error/critical and an unrecognised level fell
+	 * back to info, so the one call site that says 'high' — the front-end asset
+	 * monitor — shipped real failures as "✅ Andrewbaker.Ninja ... HIGH". A green
+	 * tick over a broken asset is the most misleading thing an alert can look like
+	 * on a phone: it is read before the words are.
+	 *
+	 * So the severity vocabularies that actually reach here are mapped onto the four
+	 * markers, and anything still unrecognised gets a warning. ✅ is reserved for
+	 * levels that genuinely mean "nothing is wrong" and cannot be reached by
+	 * accident or by a typo.
+	 *
 	 * @param string $source  Human-readable plugin/feature name, e.g. "Backup and Restore".
-	 * @param string $level   One of: info, warning, error, critical.
+	 * @param string $level   One of: info, warning, error, critical (aliases: success, notice, low, medium, high, urgent, alert, fatal).
 	 */
 	private static function alert_prefix( string $source, string $level ): string {
 		$host   = (string) ( wp_parse_url( home_url(), PHP_URL_HOST ) ?: '' );
@@ -74,8 +86,29 @@ class CloudScale_Telegram {
 			'error'    => "\u{274C}",
 			'critical' => "\u{1F6A8}",
 		];
-		$emoji = $emojis[ $level ] ?? $emojis['info'];
-		$label = strtoupper( $level ?: 'INFO' );
+		// Words that arrived from another severity vocabulary — a scanner's
+		// low/medium/high, a caller's "urgent" — resolve to one of the four rather
+		// than falling through to the tick.
+		$aliases = [
+			'success' => 'info',
+			'notice'  => 'info',
+			'low'     => 'warning',
+			'medium'  => 'warning',
+			'high'    => 'error',
+			'urgent'  => 'critical',
+			'alert'   => 'critical',
+			'fatal'   => 'critical',
+		];
+		$key = strtolower( trim( $level ) );
+		if ( '' === $key ) {
+			$key = 'info';
+		}
+		$key   = $aliases[ $key ] ?? $key;
+		$emoji = $emojis[ $key ] ?? $emojis['warning'];
+		// The caller's own word is what prints: "HIGH" carries more than "ERROR"
+		// would, and rewriting it would hide which vocabulary the alert came from.
+		// Only the marker is derived.
+		$label = strtoupper( trim( $level ) ?: 'INFO' );
 
 		$header = $source ? $domain . ' : ' . $source : $domain;
 		return $emoji . ' ' . $header . "\n" . $label . "\n\n";
