@@ -26,7 +26,7 @@ done
 
 if [[ ! -f "$ENV_FILE" ]]; then
     echo "No .env.test found — no sessions to clean up."
-    echo "Run setup-playwright-test-account.sh to configure credentials."
+    echo "Set up testing from the Test Account Manager panel, then run scripts/csdt-authorise.sh."
     exit 0
 fi
 
