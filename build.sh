@@ -323,6 +323,25 @@ if ! php "$_TG_TIME_CHECK" "$REPO_DIR"; then
 fi
 echo ""
 
+# ── No alert path can flood the phone ───────────────────────────────────────
+# Every throttle in these plugins was a transient with a 6-hour expiry, on an install with a
+# persistent Redis object cache — so `wp cache flush`, which every deploy runs, deleted the quiet
+# window and the next failure reported an ongoing incident as new. The ceiling now lives in
+# CloudScale_Telegram::send() (an option, not a transient), ahead of every call site including the
+# ones that never had a throttle. Asserted both ways: repeats and storms are quiet, and a different
+# alert, a later hour and a held-message count all still arrive.
+_TG_RATE_CHECK="$GITHUB_DIR/shared-build-tools/check-alert-rate-limit.php"
+echo "Checking no alert path can flood the owner's phone..."
+if [ ! -f "$_TG_RATE_CHECK" ]; then
+    echo "ERROR: alert rate-limit checker not found at $_TG_RATE_CHECK"
+    exit 1
+fi
+if ! php "$_TG_RATE_CHECK" "$REPO_DIR"; then
+    echo "ERROR: alerts could be sent unthrottled (details above)."
+    exit 1
+fi
+echo ""
+
 echo "Running PHPCS (WordPress standard)..."
 # memory_limit: PHP's 128M default is not enough to tokenise the whole tree — the
 # main plugin file alone is several hundred KB and the run dies partway through it.

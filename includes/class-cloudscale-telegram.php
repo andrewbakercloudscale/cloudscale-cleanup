@@ -54,6 +54,170 @@ class CloudScale_Telegram {
 		return '1' === (string) get_option( self::OPTION_MUTED, '' );
 	}
 
+	/**
+	 * The rate ledger: what has actually been sent, and what has been held back.
+	 *
+	 * AN OPTION, NOT A TRANSIENT, and that is the whole reason this exists centrally.
+	 *
+	 * Every throttle in these five plugins was a transient with a 6-hour expiry, and every one of
+	 * them read as correct. This install runs a persistent Redis object cache, so transients live in
+	 * Redis while options live in MariaDB — and every deploy of any of the five runs `wp cache flush`
+	 * and reloads PHP-FPM. That deleted every quiet window: the next failure reported an ongoing
+	 * incident as new. Several deploys a day, several identical alerts a day, from throttles that
+	 * passed their own tests because a test never flushes a cache it is not using. Reported
+	 * 2026-08-13 as "I don't want to get these spammed at me".
+	 *
+	 * WHY IT IS HERE RATHER THAN AT THE CALL SITES, which is the same argument as OPTION_MUTED one
+	 * constant above: there are 123 send() call sites across the five plugins. Eight of them had a
+	 * throttle; the rest could flood freely, and any new one starts with no throttle at all. A
+	 * guarantee that has to be remembered 123 times is not a guarantee.
+	 */
+	const OPTION_RATE = 'cloudscale_alert_rate';
+
+	/**
+	 * How long a REPEAT of the same alert stays quiet, by level.
+	 *
+	 * Keyed on a signature that ignores the numbers inside the message (see rate_signature), because
+	 * "cURL error 28: timed out after 90002ms" and "...after 90003ms" are the same news. A critical
+	 * gets the shortest window: it is the level that describes something still on fire, where a
+	 * second message an hour later is information rather than noise.
+	 */
+	const DUP_WINDOW = [
+		'critical' => 3600,        // 1h
+		'error'    => 21600,      // 6h
+		'warning'  => 21600,      // 6h
+		'info'     => 86400,      // 24h
+	];
+
+	/**
+	 * The hard ceiling, whatever the callers do.
+	 *
+	 * Duplicate suppression alone cannot bound the volume: fifty DIFFERENT alerts in a minute is
+	 * still a phone nobody can read, and a burst of distinct-but-related messages is exactly what a
+	 * failing batch job produces. So the total is capped as well, and the cap is not per-level — the
+	 * reader's attention is one pool.
+	 *
+	 * 6 an hour and 24 a day are chosen to be higher than any real incident needs and far below the
+	 * volume that makes alerts unreadable. Held messages are counted and reported on the next one
+	 * that goes out (see rate_release), so a cap that bites is visible rather than a silence.
+	 */
+	const MAX_PER_HOUR = 6;
+	const MAX_PER_DAY  = 24;
+
+	/*
+	 * There is deliberately NO bypass parameter. Every alert that goes through send() is capped,
+	 * including criticals — a level that could opt out would become the level everything uses. The
+	 * one message that must always arrive, the settings page's "send test message", posts to
+	 * Telegram directly (see register_ajax) and never reaches this gate, so the button still tells
+	 * the truth about whether alerts work.
+	 */
+
+	/**
+	 * The signature two alerts share when they are the same news.
+	 *
+	 * Numbers are dropped, not kept: timings, byte counts, IP addresses, streak counters and dates
+	 * are what differ between repeats of one incident, and keeping them would make every repeat
+	 * unique — a throttle that never fires. The first 160 characters are enough to tell one alert
+	 * apart from another while ignoring the detail that accumulates further down (the host block,
+	 * the local time, the request path).
+	 *
+	 * @param string $text   Message body.
+	 * @param string $source Sending plugin/feature.
+	 * @param string $level  Alert level.
+	 * @return string 32-char hex signature.
+	 */
+	private static function rate_signature( string $text, string $source, string $level ): string {
+		$key = strtolower( $source . '|' . $level . '|' . substr( $text, 0, 160 ) );
+		$key = preg_replace( '/\d+/', '#', $key );
+		$key = preg_replace( '/\s+/', ' ', (string) $key );
+		return md5( (string) $key );
+	}
+
+	/**
+	 * May this alert go out now? Records the decision either way.
+	 *
+	 * Returns the message to send — the body plus, when messages were held back since the last one
+	 * delivered, a line saying how many — or null when it must stay quiet.
+	 *
+	 * @param string $text   Message body.
+	 * @param string $source Sending plugin/feature.
+	 * @param string $level  Alert level.
+	 * @return string|null
+	 */
+	private static function rate_gate( string $text, string $source, string $level ): ?string {
+		$now  = time();
+		$led  = get_option( self::OPTION_RATE, [] );
+		if ( ! is_array( $led ) ) {
+			$led = [];
+		}
+		$sent = array_values( array_filter(
+			array_map( 'intval', (array) ( $led['sent'] ?? [] ) ),
+			static function ( $t ) use ( $now ) {
+				return $t > 0 && ( $now - $t ) < DAY_IN_SECONDS;
+			}
+		) );
+		$sigs = is_array( $led['sigs'] ?? null ) ? $led['sigs'] : [];
+		$held = (int) ( $led['held'] ?? 0 );
+		$dups = (int) ( $led['dups'] ?? 0 );
+
+		$sig    = self::rate_signature( $text, $source, $level );
+		$window = self::DUP_WINDOW[ $level ] ?? self::DUP_WINDOW['warning'];
+		$last   = (int) ( $sigs[ $sig ] ?? 0 );
+
+		$blocked = '';
+		// A clock that has gone backwards must not mute anything until it catches up.
+		if ( $last > 0 && $last <= $now && ( $now - $last ) < $window ) {
+			$blocked = 'dup';
+		} else {
+			$hour = 0;
+			foreach ( $sent as $t ) {
+				if ( ( $now - $t ) < HOUR_IN_SECONDS ) {
+					++$hour;
+				}
+			}
+			if ( $hour >= self::MAX_PER_HOUR || count( $sent ) >= self::MAX_PER_DAY ) {
+				$blocked = 'cap';
+			}
+		}
+
+		if ( '' !== $blocked ) {
+			$led['held'] = $held + 1;
+			$led['dups'] = $dups + ( 'dup' === $blocked ? 1 : 0 );
+			$led['sent'] = $sent;
+			$led['sigs'] = $sigs;
+			update_option( self::OPTION_RATE, $led, false );
+			return null;
+		}
+
+		// Going out: stamp the signature, drop signatures older than a day so the ledger cannot
+		// grow without bound, and reset the held counters now that they are about to be reported.
+		$sigs[ $sig ] = $now;
+		foreach ( $sigs as $k => $t ) {
+			if ( ( $now - (int) $t ) > DAY_IN_SECONDS ) {
+				unset( $sigs[ $k ] );
+			}
+		}
+		$sent[] = $now;
+		update_option(
+			self::OPTION_RATE,
+			[ 'sent' => $sent, 'sigs' => $sigs, 'held' => 0, 'dups' => 0 ],
+			false
+		);
+
+		if ( $held > 0 ) {
+			// Said on the alert that DOES go out, rather than as a message of its own: a digest that
+			// is itself an alert would be one more thing arriving on the phone.
+			$text .= "\n\n" . sprintf(
+				'(%d further alert%s held back since the last one, %d of them repeats of something already reported. Alerts are capped at %d an hour.)',
+				$held,
+				1 === $held ? ' was' : 's were',
+				$dups,
+				self::MAX_PER_HOUR
+			);
+		}
+		return $text;
+	}
+
 	public static function is_configured(): bool {
 		return ! empty( get_option( self::OPTION_TOKEN ) ) && ! empty( get_option( self::OPTION_CHAT_ID ) );
 	}
@@ -350,6 +514,16 @@ class CloudScale_Telegram {
 		if ( ! $token || ! $chat_id ) {
 			return false;
 		}
+
+		// The rate ceiling, after the credential check so a misconfigured install does not burn its
+		// hourly allowance on messages that were never going to be sent, and before composing the
+		// message so a held alert costs nothing. See OPTION_RATE for why this is here and not at the
+		// 123 call sites.
+		$gated = self::rate_gate( $text, $source, $level );
+		if ( null === $gated ) {
+			return false;
+		}
+		$text = $gated;
 
 		// Local time and originating host on EVERY alert, stamped here rather than
 		// at the call sites so a new alert cannot ship without either. Times quoted
