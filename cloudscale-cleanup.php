@@ -3,7 +3,7 @@
  * Plugin Name: CloudScale Cleanup
  * Plugin URI:  https://cloudscale.consulting
  * Description: Database and media library cleanup with dry-run preview, image optimisation, PNG to JPEG conversion, and chunked processing safe on any server. Free, open source, no subscriptions.
- * Version:     2.5.96
+ * Version:     2.5.97
  * Author:      CloudScale
  * Author URI:  https://cloudscale.consulting
  * License:     GPL-2.0-or-later
@@ -43,7 +43,7 @@ add_action( 'admin_init', function () {
     remove_action( 'admin_print_styles', 'print_emoji_styles' );
 }, 1 );
 
-define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.96' );
+define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.97' );
 define( 'CLOUDSCALE_CLEANUP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_URL', plugin_dir_url( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_SLUG', 'cloudscale-cleanup' );
@@ -115,7 +115,12 @@ function cscc_add_menu() {
 add_action( 'admin_enqueue_scripts', 'cscc_enqueue_assets' );
 
 function cscc_enqueue_assets( $hook ) {
-    if ( $hook !== 'tools_page_cloudscale-cleanup' ) {
+    // Both hook suffixes: WordPress serves this page as tools_page_* when the Tools submenu is
+    // visible to the user and admin_page_* when it is not (a capability that hides the Tools menu
+    // detaches the submenu, and the page is registered as hidden instead). Accepting only
+    // tools_page_* loaded no CSS and no JS for such a user, so the panel rendered as raw markup:
+    // server-rendered elements were present and every JS-driven one stayed hidden for ever.
+    if ( 'tools_page_cloudscale-cleanup' !== $hook && 'admin_page_cloudscale-cleanup' !== $hook ) {
         return;
     }
 
