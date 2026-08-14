@@ -272,6 +272,34 @@ fi
 # section wordpress.org does not recognise -- "External services", "Credits" -- is
 # folded into other_notes and then added onto DESCRIPTION before trimming. The
 # shared script is the single source of truth; do not re-implement the rule here.
+# ── The emergency brake must not make the emergency worse ────────────────────
+# deploy-wordpress.sh and rollback-wordpress.sh are gitignored, so they cannot be
+# fixed centrally — which is exactly why this gate is here instead. It is tracked,
+# so a checkout still carrying the old scripts fails the build with the reason.
+#
+# All five plugins took their pre-deploy backup with
+# `docker cp SRC /tmp/<plugin>-rollback 2>/dev/null || true`. docker cp copies INTO
+# an existing directory, so every deploy after the first nested the real backup one
+# level deeper and left the first backup ever taken at the top — the path rollback
+# restores. Found 2026-08-14: the cyber-devtools Pi had 1.10.418 from 2026-08-06 at
+# the top with 1.10.601 nested inside, so `bash rollback-wordpress.sh` would have
+# gone back 184 patch versions and printed success, because it grepped the version
+# only after restoring it.
+_ROLLBACK_CHECK="$GITHUB_DIR/shared-build-tools/check-rollback-safety.php"
+echo "Checking deploy/rollback cannot silently restore the wrong version..."
+if [ ! -f "$_ROLLBACK_CHECK" ]; then
+    echo "ERROR: rollback safety checker not found at $_ROLLBACK_CHECK"
+    exit 1
+fi
+if ! php "$_ROLLBACK_CHECK" "$SCRIPT_DIR"; then
+    echo ""
+    echo "ERROR: deploy/rollback safety check failed — build blocked."
+    echo "  Your local deploy-wordpress.sh / rollback-wordpress.sh predate the"
+    echo "  2026-08-14 fix. Details above say which guard is missing."
+    exit 1
+fi
+echo ""
+
 _README_CHECK="$GITHUB_DIR/shared-build-tools/check-readme-limits.php"
 echo "Checking readme.txt section limits..."
 if [ ! -f "$_README_CHECK" ]; then
