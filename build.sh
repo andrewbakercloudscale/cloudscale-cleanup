@@ -192,6 +192,19 @@ echo ""
 # These pass php -l but silently misbehave or fatal-crash on real page loads —
 # e.g. current_user_can() called before wp_set_current_user() always returns false,
 # and in some WP versions can trigger a PHP fatal that causes a 503.
+# ── admin.js must speak in one voice ────────────────────────────────────────
+# The plugin has cscShowModal()/cscConfirmModal(), and 15 native alert()/confirm() calls were left
+# behind anyway — so modal-smoke.spec.js failed on a premise that was true of most of the file.
+# This also guards the conversion hazard: confirm() is synchronous, a modal is not, so a handler
+# that reads $(this) inside the callback gets the modal's own button and posts an undefined id —
+# deleting nothing while reporting success. Five of the six confirms guard permanent deletions.
+echo "Checking admin.js uses styled modals, not native dialogs..."
+if ! php "$SCRIPT_DIR/tests/no-native-dialogs-test.php"; then
+    echo "ERROR: a native dialog returned, or a confirm callback lost its subject — build blocked."
+    exit 1
+fi
+echo ""
+
 echo "Checking WP bootstrap safety..."
 BOOTSTRAP_ERRORS=0
 _BOOTSTRAP_FORBIDDEN='current_user_can,is_user_logged_in,wp_get_current_user,get_current_user_id,check_admin_referer,check_ajax_referer,is_multisite,switch_to_blog,restore_current_blog'

@@ -1325,7 +1325,16 @@ function cscOrphanToggle(el, type) {
 
     $('#btn-run-regen-thumb').on('click', function () {
         var $btn = $(this);
-        if (!confirm('This will regenerate missing thumbnail sizes for all affected images. It may take a minute or two. Continue?')) { return; }
+        // A confirmation, not a warning: this is reversible work (it only ADDS missing sizes)
+        // and the point is the wait, not risk — so primary styling and honest copy about the
+        // time. $btn is already captured above, so the callback keeps it.
+        cscConfirmModal({
+            icon:         '⚙️',
+            title:        'Regenerate missing thumbnail sizes?',
+            body:         '<p>This regenerates missing sizes for every affected image. Nothing existing is replaced.</p><p>It may take a minute or two — leave this tab open.</p>',
+            confirmLabel: 'Regenerate',
+            confirmClass: 'csc-btn-primary'
+        }, function () {
 
         $btn.prop('disabled', true).html('⚙️ Regenerating…');
         $('#btn-scan-regen-thumb').prop('disabled', true);
@@ -1395,6 +1404,7 @@ function cscOrphanToggle(el, type) {
         }
 
         dispatch();
+        });
     });
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -2662,16 +2672,24 @@ function cscOrphanToggle(el, type) {
     /** Send delete-to-bin request for a cron hook. */
     function cscDeleteCronJob(hook) {
         if (!hook) { return; }
-        if (!window.confirm('Move "' + hook + '" to the cron recycle bin?\n\nYou can restore it from the bin below.')) { return; }
+        // No $(this) hazard here: `hook` is a parameter, so it survives into the callback.
+        cscConfirmModal({
+            icon:         '🗑',
+            title:        'Move this cron job to the recycle bin?',
+            body:         '<p>' + esc(hook) + '</p><p>You can restore it from the bin below.</p>',
+            confirmLabel: 'Move to bin',
+            confirmClass: 'csc-btn-primary'
+        }, function () {
         $.post(CSC.ajax_url, { action: 'cscc_cron_delete', nonce: CSC.nonce, hook: hook }, function(resp) {
             if (resp.success) {
                 cronLoaded = false;
                 cscLoadCronStatus();
                 cronLoaded = true;
             } else {
-                alert('Could not delete: ' + (resp.data || 'Unknown error'));
+                cscShowModal('Could not move the cron job', resp.data || 'Unknown error');
             }
-        }).fail(function() { alert('Network error deleting cron job.'); });
+        }).fail(function() { cscShowModal('Network error', 'The cron job was not moved — the request did not reach the server.'); });
+        });
     }
 
     // Delete button in the events table
@@ -2703,9 +2721,20 @@ function cscOrphanToggle(el, type) {
 
     // Permanently delete button in recycle bin
     $(document).on('click', '.csc-cron-purge-btn', function() {
-        if (!window.confirm('Permanently delete this cron job? This cannot be undone.')) { return; }
+        // READ $(this) BEFORE THE MODAL. cscConfirmModal() calls back from a click on the modal's
+        // own confirm button, where `this` is that button and not this row's Delete — so reading
+        // the id inside the callback would post id: undefined, purge nothing, and report success.
+        // Every confirm converted here has that hazard; it is the reason these were left as
+        // a native browser dialog rather than converted with the rest.
         var id   = $(this).data('id');
         var $res = $('#csc-cron-recycle-result');
+        cscConfirmModal({
+            icon:         '🗑',
+            title:        'Permanently delete this cron job?',
+            warning:      'This cannot be undone. The job is removed from the recycle bin for good.',
+            confirmLabel: 'Delete permanently',
+            confirmClass: 'csc-btn-danger'
+        }, function () {
         $.post(CSC.ajax_url, { action: 'cscc_cron_purge_bin', nonce: CSC.nonce, id: id }, function(resp) {
             if (resp.success) {
                 cronLoaded = false;
@@ -2718,6 +2747,7 @@ function cscOrphanToggle(el, type) {
         }).fail(function() {
             $res.css({ background: '#fef2f2', border: '1px solid #fca5a5', color: '#991b1b' })
                 .html('&#10007; Network error.').show();
+        });
         });
     });
 
@@ -2872,20 +2902,31 @@ function cscOrphanToggle(el, type) {
                         padding: '3px 7px', 'font-size': '13px', cursor: 'pointer', color: '#d32f2f', 'line-height': '1'
                     }).html('&#128465;').attr('title', 'Move to Storage Recycle Bin').on('click', function(e) {
                         e.stopPropagation();
-                        if (!window.confirm('Move "' + d_ref.name + '" to the Storage Recycle Bin?\n\nYou can restore it from the bin at any time.')) { return; }
+                        // Captured before the modal — see the note on the cron purge handler.
                         var $btn = $(this);
+                        // Primary, not danger: this move is reversible and the copy says so. The old
+                        // the native dialog said it too, and styling a reversible action as a deletion
+                        // teaches people to dismiss the ones that are not.
+                        cscConfirmModal({
+                            icon:         '🗑',
+                            title:        'Move this folder to the Storage Recycle Bin?',
+                            body:         '<p>' + esc(d_ref.name) + '</p><p>You can restore it from the bin at any time.</p>',
+                            confirmLabel: 'Move to bin',
+                            confirmClass: 'csc-btn-primary'
+                        }, function () {
                         $btn.prop('disabled', true).text('…');
                         $.post(CSC.ajax_url, { action: 'cscc_storage_recycle_folder', nonce: CSC.nonce, path: d_ref.rel }, function(res) {
                             if (res.success) {
                                 $r.fadeOut(200, function() { $(this).remove(); });
                                 cscLoadStorageBin();
                             } else {
-                                alert(res.data || 'Failed to move to recycle bin.');
+                                cscShowModal('Could not move to the recycle bin', res.data || 'Failed to move to recycle bin.');
                                 $btn.prop('disabled', false).html('&#128465;');
                             }
                         }).fail(function() {
-                            alert('Network error.');
+                            cscShowModal('Network error', 'The folder was not moved — the request did not reach the server.');
                             $btn.prop('disabled', false).html('&#128465;');
+                        });
                         });
                     });
                     $r.append($('<td>').css({ padding: '9px 12px', 'text-align': 'center' }).append($trash));
@@ -2957,26 +2998,34 @@ function cscOrphanToggle(el, type) {
                                 $r.fadeOut(200, function() { $(this).remove(); cscLoadStorageBin(); });
                                 cscSpaceScan(cscSpacePath);
                             } else {
-                                alert(res.data || 'Restore failed.');
+                                cscShowModal('Restore failed', res.data || 'Restore failed.');
                                 $btn.prop('disabled', false).text('↩ Restore');
                             }
-                        }).fail(function() { alert('Network error.'); $btn.prop('disabled', false).text('↩ Restore'); });
+                        }).fail(function() { cscShowModal('Network error', 'The file was not restored — the request did not reach the server.'); $btn.prop('disabled', false).text('↩ Restore'); });
                     });
                     var $purge = $('<button>').css({
                         background: '#ffebee', border: '1px solid #e53935', 'border-radius': '4px',
                         padding: '4px 8px', 'font-size': '12px', cursor: 'pointer', color: '#c62828', 'white-space': 'nowrap'
                     }).text('🗑 Delete Forever').on('click', function() {
-                        if (!window.confirm('Permanently delete "' + it.original_name + '"?\n\nThis cannot be undone.')) { return; }
+                        // Captured before the modal — see the note on the cron purge handler.
                         var $btn = $(this);
+                        cscConfirmModal({
+                            icon:         '🗑',
+                            title:        'Permanently delete this file?',
+                            warning:      'This cannot be undone. "' + it.original_name + '" is deleted from disk.',
+                            confirmLabel: 'Delete permanently',
+                            confirmClass: 'csc-btn-danger'
+                        }, function () {
                         $btn.prop('disabled', true).text('…');
                         $.post(CSC.ajax_url, { action: 'cscc_storage_recycle_purge', nonce: CSC.nonce, id: it.id }, function(res) {
                             if (res.success) {
                                 $r.fadeOut(200, function() { $(this).remove(); cscLoadStorageBin(); });
                             } else {
-                                alert(res.data || 'Delete failed.');
+                                cscShowModal('Delete failed', res.data || 'Delete failed.');
                                 $btn.prop('disabled', false).text('🗑 Delete Forever');
                             }
-                        }).fail(function() { alert('Network error.'); $btn.prop('disabled', false).text('🗑 Delete Forever'); });
+                        }).fail(function() { cscShowModal('Network error', 'The file could not be deleted — the request did not reach the server.'); $btn.prop('disabled', false).text('🗑 Delete Forever'); });
+                        });
                     });
                     $r.append($('<td>').css({ padding: '8px 12px', 'text-align': 'center', 'white-space': 'nowrap' }).append($restore).append($purge));
                 })($row, item);
@@ -2987,13 +3036,21 @@ function cscOrphanToggle(el, type) {
     }
 
     $('#btn-storage-bin-empty').on('click', function() {
-        if (!window.confirm('Permanently delete ALL items in the Storage Recycle Bin?\n\nThis cannot be undone.')) { return; }
+        // Captured before the modal — see the note on the cron purge handler above.
         var $btn = $(this);
+        cscConfirmModal({
+            icon:         '🗑',
+            title:        'Permanently delete everything in the Storage Recycle Bin?',
+            warning:      'This cannot be undone. Every file in the bin is deleted from disk.',
+            confirmLabel: 'Delete all permanently',
+            confirmClass: 'csc-btn-danger'
+        }, function () {
         $btn.prop('disabled', true).text('…');
         $.post(CSC.ajax_url, { action: 'cscc_storage_recycle_purge', nonce: CSC.nonce, id: '' }, function(res) {
             $btn.prop('disabled', false).text('Empty Bin');
-            if (res.success) { cscLoadStorageBin(); } else { alert(res.data || 'Failed to empty bin.'); }
+            if (res.success) { cscLoadStorageBin(); } else { cscShowModal('Could not empty the bin', res.data || 'Failed to empty bin.'); }
         }).fail(function() { $btn.prop('disabled', false).text('Empty Bin'); });
+        });
     });
 
     // ── End Space Report ──────────────────────────────────────────────────────
