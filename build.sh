@@ -298,6 +298,27 @@ fi
 # the top with 1.10.601 nested inside, so `bash rollback-wordpress.sh` would have
 # gone back 184 patch versions and printed success, because it grepped the version
 # only after restoring it.
+# ── The documented artefact archive must actually be written ─────────────────
+# CLAUDE.md promised a date-stamped copy of every deployed zip in archive/ and no deploy
+# script wrote one, so the documented recovery path did not exist. That matters more than
+# a missing convenience because build.sh rsyncs the WORKING TREE: a deploy can ship code
+# that is in no commit, and on 2026-08-14 and 2026-08-17 it did. Git does not always hold
+# what production runs; the archived zip does. deploy-wordpress.sh is gitignored, so this
+# tracked gate is the only way the promise survives a fresh checkout.
+_ARCHIVE_CHECK="$GITHUB_DIR/shared-build-tools/check-deploy-archive.php"
+echo "Checking the deploy archives what it ships..."
+if [ ! -f "$_ARCHIVE_CHECK" ]; then
+    echo "ERROR: deploy archive checker not found at $_ARCHIVE_CHECK"
+    exit 1
+fi
+if ! php "$_ARCHIVE_CHECK" "$SCRIPT_DIR"; then
+    echo ""
+    echo "ERROR: deploy archive check failed — build blocked."
+    echo "  Your local deploy-wordpress.sh does not keep a copy of what it deploys."
+    exit 1
+fi
+echo ""
+
 _ROLLBACK_CHECK="$GITHUB_DIR/shared-build-tools/check-rollback-safety.php"
 echo "Checking deploy/rollback cannot silently restore the wrong version..."
 if [ ! -f "$_ROLLBACK_CHECK" ]; then
