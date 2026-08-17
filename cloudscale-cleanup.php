@@ -3,7 +3,7 @@
  * Plugin Name: CloudScale Cleanup
  * Plugin URI:  https://cloudscale.consulting
  * Description: Database and media library cleanup with dry-run preview, image optimisation, PNG to JPEG conversion, and chunked processing safe on any server. Free, open source, no subscriptions.
- * Version:     2.5.99
+ * Version:     2.5.102
  * Author:      CloudScale
  * Author URI:  https://cloudscale.consulting
  * License:     GPL-2.0-or-later
@@ -43,11 +43,14 @@ add_action( 'admin_init', function () {
     remove_action( 'admin_print_styles', 'print_emoji_styles' );
 }, 1 );
 
-define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.99' );
+define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.102' );
 define( 'CLOUDSCALE_CLEANUP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_URL', plugin_dir_url( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_SLUG', 'cloudscale-cleanup' );
 
+// Error text in the units the timeouts are set in: WordPress reports a 10-second ceiling as
+// "10000 milliseconds". Required before the shared Telegram class, which uses it too.
+require_once CLOUDSCALE_CLEANUP_DIR . 'includes/class-cloudscale-error-text.php';
 require_once CLOUDSCALE_CLEANUP_DIR . 'includes/class-cloudscale-telegram.php';
 
 // Clear opcode cache on activation so updated files take effect immediately
@@ -1747,7 +1750,7 @@ function cscc_ajax_regen_thumb_batch() {
         }
         $new_meta = wp_generate_attachment_metadata( $id, $file );
         if ( is_wp_error( $new_meta ) ) {
-            $batch[] = array( 'id' => $id, 'ok' => false, 'skipped' => false, 'error' => $new_meta->get_error_message() );
+            $batch[] = array( 'id' => $id, 'ok' => false, 'skipped' => false, 'error' => CloudScale_Error_Text::in_seconds( $new_meta->get_error_message() ) );
         } else {
             wp_update_attachment_metadata( $id, $new_meta );
             $batch[]  = array( 'id' => $id, 'ok' => true, 'skipped' => false, 'regenerated' => true );
@@ -2387,7 +2390,7 @@ function cscc_ajax_media_restore() {
             $new_id = wp_insert_post( $post_data, true );
 
             if ( is_wp_error( $new_id ) ) {
-                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $att_id . ', ' . esc_html( $title ) . ': ' . $new_id->get_error_message() );
+                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $att_id . ', ' . esc_html( $title ) . ': ' . CloudScale_Error_Text::in_seconds( $new_id->get_error_message() ) );
                 $errors++;
                 continue;
             }
@@ -2473,7 +2476,7 @@ function cscc_ajax_media_restore_single() {
         $post_data['import_id'] = intval( $att_id );
         $new_id = wp_insert_post( $post_data, true );
         if ( is_wp_error( $new_id ) ) {
-            wp_send_json_error( 'Failed to restore post: ' . $new_id->get_error_message() );
+            wp_send_json_error( 'Failed to restore post: ' . CloudScale_Error_Text::in_seconds( $new_id->get_error_message() ) );
         }
 
         // Restore meta
@@ -3291,7 +3294,7 @@ function cscc_ajax_optimise_chunk() {
 
         $editor = wp_get_image_editor( $file );
         if ( is_wp_error( $editor ) ) {
-            $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ': ' . $editor->get_error_message() );
+            $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ': ' . CloudScale_Error_Text::in_seconds( $editor->get_error_message() ) );
             continue;
         }
 
@@ -3308,7 +3311,7 @@ function cscc_ajax_optimise_chunk() {
             $tmp_file = $new_file . '.csc-tmp';
             $result   = $editor->save( $tmp_file, 'image/jpeg' );
             if ( is_wp_error( $result ) ) {
-                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ' PNG→JPEG: ' . $result->get_error_message() );
+                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ' PNG→JPEG: ' . CloudScale_Error_Text::in_seconds( $result->get_error_message() ) );
                 continue;
             }
             $actual_path = $result['path'];
@@ -3336,7 +3339,7 @@ function cscc_ajax_optimise_chunk() {
             $tmp_file    = $file . '.csc-tmp';
             $result      = $editor->save( $tmp_file );
             if ( is_wp_error( $result ) ) {
-                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ': ' . $result->get_error_message() );
+                $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ': ' . CloudScale_Error_Text::in_seconds( $result->get_error_message() ) );
                 continue;
             }
             $actual_path = $result['path'];
@@ -3710,7 +3713,7 @@ function cscc_ajax_cspj_chunk_finish() {
     cscc_cspj_delete_dir( $dir );
 
     if ( is_wp_error( $result ) ) {
-        wp_send_json_error( $result->get_error_message() );
+        wp_send_json_error( CloudScale_Error_Text::in_seconds( $result->get_error_message() ) );
     }
 
     // Track conversions
@@ -3773,7 +3776,7 @@ function cscc_ajax_cspj_add_to_library() {
         'post_status'    => 'inherit',
     );
     $attach_id = wp_insert_attachment( $attachment, $final_path );
-    if ( is_wp_error( $attach_id ) ) { wp_send_json_error( $attach_id->get_error_message() ); }
+    if ( is_wp_error( $attach_id ) ) { wp_send_json_error( CloudScale_Error_Text::in_seconds( $attach_id->get_error_message() ) ); }
 
     require_once ABSPATH . 'wp-admin/includes/image.php';
     wp_update_attachment_metadata( $attach_id, wp_generate_attachment_metadata( $attach_id, $final_path ) );

@@ -591,7 +591,7 @@ class CloudScale_Telegram {
 				);
 
 				if ( is_wp_error( $response ) ) {
-					wp_send_json_error( 'Request failed: ' . $response->get_error_message() );
+					wp_send_json_error( 'Request failed: ' . CloudScale_Error_Text::in_seconds( $response->get_error_message() ) );
 					return;
 				}
 
@@ -665,7 +665,7 @@ class CloudScale_Telegram {
 			);
 
 			if ( is_wp_error( $response ) ) {
-				wp_send_json_error( 'Telegram request failed: ' . $response->get_error_message() );
+				wp_send_json_error( 'Telegram request failed: ' . CloudScale_Error_Text::in_seconds( $response->get_error_message() ) );
 				return;
 			}
 

@@ -366,6 +366,26 @@ if ! php "$_SHARED_COPIES_CHECK" "$GITHUB_DIR"; then
 fi
 echo ""
 
+# ── Error text in the units the timeouts are set in ─────────────────────────
+# Every timeout in this plugin is SECONDS, and WordPress reports one in milliseconds because
+# that is curl's wording: "cURL error 28: Operation timed out after 20000 milliseconds". The
+# site owner reading that cannot match 20000 to anything in the code, and the proxy had the
+# same fault on its own breaker alerts (240000 for a 240s ceiling, 2026-08-17). All 115 call
+# sites across the five plugins were converted in one pass through
+# CloudScale_Error_Text::in_seconds(); this gate exists for the 116th, which will be written
+# by copying one of the other 115.
+_ERRTXT_CHECK="$GITHUB_DIR/shared-build-tools/check-error-text-units.php"
+if [ ! -f "$_ERRTXT_CHECK" ]; then
+    echo "ERROR: error-text checker not found at $_ERRTXT_CHECK"
+    exit 1
+fi
+if ! php "$_ERRTXT_CHECK" "$SCRIPT_DIR"; then
+    echo ""
+    echo "ERROR: a WP_Error message is rendered in milliseconds — build blocked."
+    exit 1
+fi
+echo ""
+
 
 # ── Telegram alerts carry local time ────────────────────────────────────────
 # Alerts arrive on a phone, at night, read by someone in the site's own timezone —
