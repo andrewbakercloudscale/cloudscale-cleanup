@@ -1,0 +1,8 @@
+{
+  "_comment": "Config for shared-build-tools/check-wporg-rejection-classes.php. 'cloudscale' is the shared-library prefix (CloudScale_Telegram/CloudScale_Licence come from cloudscale-backup).",
+  "prefixes": ["cscc", "cloudscale"],
+  "legacy_prefixes": [],
+  "legacy_budget": 0,
+  "foreign_hooks": [],
+  "path_exemptions": []
+}

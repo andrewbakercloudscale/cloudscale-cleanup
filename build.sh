@@ -348,6 +348,28 @@ fi
 echo "readme.txt section limits: OK"
 echo ""
 
+# ── WordPress.org submission gates ──────────────────────────────────────────
+# The six classes round R (18Aug26) rejected cyber-devtools on, checked against the
+# STAGED tree. This ran in NO plugin but cyber-devtools until 2026-08-18, which is how
+# this plugin's own set_time_limit()/prefix problems went unmeasured. The checker is
+# marker-immune on purpose: seven submissions were refused while csdt-submission-ok
+# markers sat on the offending lines and the reviewer never saw one.
+_WPORG_VALIDATE="$GITHUB_DIR/shared-build-tools/validate-wp-submission.sh"
+echo "Running WordPress.org submission gates..."
+if [ ! -f "$_WPORG_VALIDATE" ]; then
+    # Fail loudly: a silently-missing validator would recreate the exact hole this closes.
+    echo "ERROR: submission validator not found at $_WPORG_VALIDATE"
+    exit 1
+fi
+if ! bash "$_WPORG_VALIDATE" "$REPO_DIR" --offline; then
+    echo ""
+    echo "ERROR: WordPress.org submission gates failed — build blocked."
+    echo "  Fix the findings above, or record a deliberate exemption with a written"
+    echo "  reason in .wporg-prefixes.json. There is no inline marker that silences them."
+    exit 1
+fi
+echo ""
+
 # ── Shared class copies must match their canonical source ────────────────────
 # CloudScale_Telegram and the model-name map are shared by all five plugins and guarded by
 # class_exists(), so exactly ONE copy loads at runtime. On the live install that copy belongs
@@ -362,6 +384,24 @@ fi
 if ! php "$_SHARED_COPIES_CHECK" "$GITHUB_DIR"; then
     echo ""
     echo "ERROR: a shared class copy has drifted from shared-admin-ui/ — build blocked."
+    exit 1
+fi
+echo ""
+
+# ── Chunk-size option survived its prefix rename ────────────────────────────
+# 'cspj_chunk_mb' was a third prefix alongside this plugin's own cscc_, which WordPress.org
+# rejects, so the live key is now 'cscc_chunk_mb'. It holds a user setting, so reads fall back
+# to the old name and nothing writes or deletes it before uninstall. Breaking that chain does
+# not throw — the user's chunk size silently reverts to the default — so it is asserted here,
+# negative cases included. Verified to fail when the fallback is removed.
+_CSCC_OPT_TEST="$GITHUB_DIR/shared-build-tools/test-cleanup-option-migration.php"
+if [ ! -f "$_CSCC_OPT_TEST" ]; then
+    echo "ERROR: chunk-size option migration test not found at $_CSCC_OPT_TEST"
+    exit 1
+fi
+if ! php "$_CSCC_OPT_TEST"; then
+    echo ""
+    echo "ERROR: the chunk-size option migration is broken — a saved setting would be lost."
     exit 1
 fi
 echo ""
@@ -485,13 +525,17 @@ echo ""
 
 # Create temp directory with plugin name as wrapper
 mkdir -p "$TEMP_DIR/$PLUGIN_NAME"
+# EXCLUDE BY PATTERN, NOT BY NAME. This list used to enumerate each shell script and each
+# dotfile individually, so every file added afterwards shipped by default — and two did:
+# `.env.test`, whose own first line says "Never commit this file" and which holds the
+# CloudScale test-account credentials, and `run-ui-tests.sh`. Both were inside the zip built
+# for WordPress.org (found 2026-08-18). A name-by-name list cannot fail safe; a pattern can.
+# The individual entries below are kept because they are not covered by a pattern.
 rsync -a \
-  --exclude='.git' --exclude='.gitignore' --exclude='*.zip' \
-  --exclude='.DS_Store' --exclude='._*' \
-  --exclude='.claude-flow' --exclude='.claude' \
-  --exclude='build.sh' --exclude='deploy-wordpress.sh' \
-  --exclude='backup-s3.sh' --exclude='purge-cloudflare.sh' \
-  --exclude='rollback-wordpress.sh' \
+  --exclude='.*' \
+  --exclude='*.sh' \
+  --exclude='*.zip' \
+  --exclude='._*' \
   --exclude='node_modules' --exclude='package.json' --exclude='package-lock.json' \
   --exclude='playwright.config.js' --exclude='tests' --exclude='test-results' --exclude='playwright-report' \
   --exclude='phpcs.xml' \

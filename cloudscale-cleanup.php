@@ -96,9 +96,15 @@ define( 'CSCC_CHUNK_IMAGES',   10 );
 define( 'CSCC_CHUNK_OPTIMISE',  5 );
 
 // PNG to JPEG converter constants
-define( 'CSPJ_OPTION_CHUNK_MB',  'cspj_chunk_mb' );
-define( 'CSPJ_DEFAULT_CHUNK_MB', 1.5 );
-define( 'CSPJ_MAX_TOTAL_MB',     200 );
+// These carried a third prefix (cspj_) alongside this plugin's own cscc_, which WordPress.org
+// flags: one distinctive prefix per plugin. Renaming the CONSTANTS is free — they persist
+// nothing. The option KEY is different: 'cspj_chunk_mb' is a live row in wp_options, so the new
+// name is what gets written and the old one is still READ as a fallback. Nothing deletes the old
+// row here, so downgrading keeps working; uninstall.php removes both.
+define( 'CSCC_OPTION_CHUNK_MB',  'cscc_chunk_mb' );
+define( 'CSCC_LEGACY_CHUNK_MB',  'cspj_chunk_mb' );
+define( 'CSCC_DEFAULT_CHUNK_MB', 1.5 );
+define( 'CSCC_MAX_TOTAL_MB',     200 );
 
 // ─── Admin menu ──────────────────────────────────────────────────────────────
 
@@ -154,7 +160,7 @@ function cscc_enqueue_assets( $hook ) {
         'nonce'          => $cscc_nonce,
         'cspj_chunk_mb'  => $cspj_chunk_mb,
         'cspj_server_max_mb' => $cspj_server_max,
-        'cspj_max_total_mb'  => CSPJ_MAX_TOTAL_MB,
+        'cspj_max_total_mb'  => CSCC_MAX_TOTAL_MB,
         'version'        => CLOUDSCALE_CLEANUP_VERSION,
     ) );
 
@@ -165,7 +171,7 @@ function cscc_enqueue_assets( $hook ) {
         . 'CSC.nonce=CSC.nonce||' . wp_json_encode( $cscc_nonce ) . ';'
         . 'CSC.cspj_chunk_mb=CSC.cspj_chunk_mb||' . wp_json_encode( $cspj_chunk_mb ) . ';'
         . 'CSC.cspj_server_max_mb=CSC.cspj_server_max_mb||' . wp_json_encode( $cspj_server_max ) . ';'
-        . 'CSC.cspj_max_total_mb=CSC.cspj_max_total_mb||' . intval( CSPJ_MAX_TOTAL_MB ) . ';'
+        . 'CSC.cspj_max_total_mb=CSC.cspj_max_total_mb||' . intval( CSCC_MAX_TOTAL_MB ) . ';'
         . 'CSC.version=CSC.version||' . wp_json_encode( CLOUDSCALE_CLEANUP_VERSION ) . ';'
         . 'console.log("[CSC] Fallback CSC injected inline. wp_localize_script may not have fired.");'
         . '}';
@@ -235,8 +241,11 @@ function cscc_render_dashboard_widget() {
     $png_url    = admin_url( 'tools.php?page=cloudscale-cleanup&tab=png-to-jpeg' );
     $main_url   = admin_url( 'tools.php?page=cloudscale-cleanup' );
 
-    // Hover helper, hardcoded, no user input
-    $hov = "onmouseover=\"this.style.opacity='0.82'\" onmouseout=\"this.style.opacity='1'\"";
+    // Hover is a CSS class, not inline onmouseover/onmouseout attributes. Those had to be
+    // echoed as raw HTML, which is an unescapable output by construction and one of the
+    // things WordPress.org rejects; a class is escapable with esc_attr() and also keeps
+    // behaviour out of markup. The rule itself is emitted once, below.
+    $hov_class = 'cscc-hov';
 
     // Autoload RAG
     $al_bytes = $health ? cscc_get_autoload_size() : 0;
@@ -259,23 +268,44 @@ function cscc_render_dashboard_widget() {
             . ' stroke-dasharray="' . esc_attr( (string) $used_len ) . ' ' . esc_attr( (string) $gap_len ) . '"'
             . ' stroke-linecap="round" transform="rotate(-90,40,40)"/>'
             . '<text x="40" y="38" text-anchor="middle" dominant-baseline="middle"'
-            . ' style="font-size:14px;font-weight:800;fill:' . esc_attr( $rc['color'] ) . ';font-family:-apple-system,sans-serif">'
+            . ' font-size="14" font-weight="800" font-family="-apple-system,sans-serif"'
+            . ' fill="' . esc_attr( $rc['color'] ) . '">'
             . esc_html( $pct_text ) . '</text>'
             . '<text x="40" y="53" text-anchor="middle"'
-            . ' style="font-size:7px;font-weight:700;fill:#94a3b8;font-family:-apple-system,sans-serif;letter-spacing:1px">USED</text>'
+            . ' font-size="7" font-weight="700" font-family="-apple-system,sans-serif"'
+            . ' letter-spacing="1" fill="#94a3b8">USED</text>'
             . '</svg>';
     } else {
         $donut = '<svg viewBox="0 0 80 80" width="76" height="76" style="display:block">'
             . '<circle cx="40" cy="40" r="' . $r . '" fill="none" stroke="#e2e8f0" stroke-width="9"/>'
             . '<text x="40" y="40" text-anchor="middle" dominant-baseline="middle"'
-            . ' style="font-size:11px;font-weight:700;fill:#94a3b8;font-family:-apple-system,sans-serif">&middot;</text>'
+            . ' font-size="11" font-weight="700" font-family="-apple-system,sans-serif"'
+            . ' fill="#94a3b8">&middot;</text>'
             . '</svg>';
     }
 
+    // Tags/attributes the donut below is allowed to emit. Declared explicitly rather than
+    // trusting the string: it is assembled here today, but wp_kses() means a future edit that
+    // interpolates something unexpected still cannot inject markup.
+    $svg_allowed = array(
+        'svg'    => array( 'viewbox' => true, 'width' => true, 'height' => true, 'style' => true ),
+        'circle' => array(
+            'cx' => true, 'cy' => true, 'r' => true, 'fill' => true, 'stroke' => true,
+            'stroke-width' => true, 'stroke-dasharray' => true, 'stroke-linecap' => true,
+            'transform' => true,
+        ),
+        'text'   => array(
+            'x' => true, 'y' => true, 'text-anchor' => true, 'dominant-baseline' => true,
+            'font-size' => true, 'font-weight' => true, 'font-family' => true,
+            'letter-spacing' => true, 'fill' => true,
+        ),
+    );
+
     // Time-ago helper
+    // Returns RAW text; the caller escapes. See $metrics for why nothing is pre-escaped here.
     $ago = function( $val ) {
         return $val
-            ? esc_html( human_time_diff( strtotime( $val ), current_time( 'timestamp' ) ) . ' ago' )
+            ? human_time_diff( strtotime( $val ), current_time( 'timestamp' ) ) . ' ago'
             : 'Not run';
     };
 
@@ -290,6 +320,7 @@ function cscc_render_dashboard_widget() {
         $runway_col = $rag === 'red' ? '#dc2626' : ( $rag === 'amber' ? '#d97706' : '#0f172a' );
     }
     ?>
+    <style>.cscc-hov{transition:opacity .15s}.cscc-hov:hover{opacity:.82}</style>
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#0f172a;margin:-12px -12px 0;padding:0">
 
         <!-- Dark header band (full-bleed) -->
@@ -301,7 +332,7 @@ function cscc_render_dashboard_widget() {
                 </div>
                 <a href="<?php echo esc_url( $health_url ); ?>"
                    style="display:inline-flex;align-items:center;gap:5px;background:rgba(20,184,166,0.15);border:1px solid rgba(20,184,166,0.4);color:<?php echo esc_attr( $rc['color'] ); ?>;font-size:10px;font-weight:700;letter-spacing:0.06em;padding:2px 8px;border-radius:20px;text-decoration:none;transition:opacity 0.15s"
-                   <?php echo $hov; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
+                   class="<?php echo esc_attr( $hov_class ); ?>">
                     <span style="width:6px;height:6px;border-radius:50%;background:<?php echo esc_attr( $rc['color'] ); ?>;flex-shrink:0;display:inline-block"></span>
                     <?php echo esc_html( $rc['label'] ); ?>
                 </a>
@@ -314,15 +345,18 @@ function cscc_render_dashboard_widget() {
 
         <!-- Disk panel: donut chart + metric rows -->
         <div style="display:flex;align-items:center;gap:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:11px">
-            <div style="flex-shrink:0"><?php echo $donut; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></div>
+            <div style="flex-shrink:0"><?php echo wp_kses( $donut, $svg_allowed ); ?></div>
             <div style="flex:1;min-width:0">
                 <?php if ( $health ) :
+                    // Values are RAW here and escaped at the echo below. They used to be
+                    // escaped on the way in, which then required an unescaped echo to avoid
+                    // double-escaping -- exactly the pattern WordPress.org rejects.
                     $metrics = array(
-                        array( 'Disk Used',   esc_html( size_format( $health['disk_used'], 1 ) ),                                     '#0f172a' ),
-                        array( 'Disk Free',   esc_html( size_format( $health['disk_free'], 1 ) ),                                     '#0f172a' ),
-                        array( 'Growth / Wk', $health['growth_per_week'] > 0 ? esc_html( size_format( $health['growth_per_week'], 1 ) ) : '·', '#0f172a' ),
-                        array( 'Est. Runway', esc_html( $runway_txt ),                                                                $runway_col ),
-                        array( 'Autoload',    esc_html( size_format( $al_bytes, 1 ) ),                                                $al_color ),
+                        array( 'Disk Used',   size_format( $health['disk_used'], 1 ),  '#0f172a' ),
+                        array( 'Disk Free',   size_format( $health['disk_free'], 1 ),  '#0f172a' ),
+                        array( 'Growth / Wk', $health['growth_per_week'] > 0 ? size_format( $health['growth_per_week'], 1 ) : '·', '#0f172a' ),
+                        array( 'Est. Runway', $runway_txt,                             $runway_col ),
+                        array( 'Autoload',    size_format( $al_bytes, 1 ),             $al_color ),
                     );
                     $last_i = count( $metrics ) - 1;
                     foreach ( $metrics as $i => $m ) :
@@ -330,7 +364,7 @@ function cscc_render_dashboard_widget() {
                     ?>
                     <div style="display:flex;justify-content:space-between;align-items:center;padding:2.5px 0;<?php echo esc_attr( $sep ); ?>">
                         <span style="font-size:9.5px;font-weight:600;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px"><?php echo esc_html( $m[0] ); ?></span>
-                        <span style="font-size:12px;font-weight:700;color:<?php echo esc_attr( $m[2] ); ?>"><?php echo $m[1]; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- pre-escaped ?></span>
+                        <span style="font-size:12px;font-weight:700;color:<?php echo esc_attr( $m[2] ); ?>"><?php echo esc_html( $m[1] ); ?></span>
                     </div>
                     <?php endforeach;
                 else : ?>
@@ -350,10 +384,10 @@ function cscc_render_dashboard_widget() {
             foreach ( $tiles as $t ) : ?>
             <a href="<?php echo esc_url( $t[0] ); ?>"
                style="display:block;text-decoration:none;background:#fff;border:1px solid #e2e8f0;border-top:3px solid <?php echo esc_attr( $t[4] ); ?>;border-radius:8px;padding:8px 5px 7px;text-align:center;transition:opacity 0.15s"
-               <?php echo $hov; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
-                <div style="font-size:15px;line-height:1;margin-bottom:4px"><?php echo $t[1]; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- emoji literal ?></div>
+               class="<?php echo esc_attr( $hov_class ); ?>">
+                <div style="font-size:15px;line-height:1;margin-bottom:4px"><?php echo esc_html( $t[1] ); ?></div>
                 <div style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.4px;color:<?php echo esc_attr( $t[4] ); ?>;margin-bottom:4px"><?php echo esc_html( $t[2] ); ?></div>
-                <div style="font-size:10px;font-weight:600;color:#475569;line-height:1.2"><?php echo $t[3]; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- output of esc_html() ?></div>
+                <div style="font-size:10px;font-weight:600;color:#475569;line-height:1.2"><?php echo esc_html( $t[3] ); ?></div>
             </a>
             <?php endforeach; ?>
         </div>
@@ -362,12 +396,12 @@ function cscc_render_dashboard_widget() {
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
             <a href="<?php echo esc_url( $png_url ); ?>"
                style="display:flex;align-items:center;justify-content:center;gap:5px;background:#fff;border:2px solid #d1d5db;color:#374151;font-weight:700;font-size:11.5px;padding:9px 6px;border-radius:8px;text-decoration:none;transition:opacity 0.15s"
-               <?php echo $hov; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
+               class="<?php echo esc_attr( $hov_class ); ?>">
                 🖼 PNG → JPEG
             </a>
             <a href="<?php echo esc_url( $main_url ); ?>"
                style="display:flex;align-items:center;justify-content:center;gap:5px;background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);color:#fff;font-weight:700;font-size:11.5px;padding:9px 6px;border-radius:8px;text-decoration:none;box-shadow:0 2px 8px rgba(37,99,235,0.3);transition:opacity 0.15s"
-               <?php echo $hov; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>>
+               class="<?php echo esc_attr( $hov_class ); ?>">
                 ⚡ Open Plugin
             </a>
         </div>
@@ -421,8 +455,10 @@ class CSCC_Front_Widget extends WP_Widget {
             elseif ( $health_rag === 'red' ) { $health_label = 'Critical'; }
         }
 
-        echo $args['before_widget']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
-        echo $args['before_title'] . esc_html( $title ) . $args['after_title']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
+        // Theme-supplied wrappers, so the HTML in them must survive: wp_kses_post() escapes
+        // these without flattening the markup the theme relies on.
+        echo wp_kses_post( $args['before_widget'] );
+        echo wp_kses_post( $args['before_title'] ) . esc_html( $title ) . wp_kses_post( $args['after_title'] );
         ?>
         <div class="csc-front-widget">
             <ul class="csc-fw-list">
@@ -458,7 +494,7 @@ class CSCC_Front_Widget extends WP_Widget {
             <?php endif; ?>
         </div>
         <?php
-        echo $args['after_widget']; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- standard WordPress widget args registered by the theme, not user input
+        echo wp_kses_post( $args['after_widget'] );
     }
 
     /** Settings form in Appearance -> Widgets */
@@ -1656,7 +1692,10 @@ function cscc_ajax_regen_thumb_scan() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- required to prevent PHP timeout on long-running image scans
+    // No request-time extension is asked for here. WordPress.org rejects the PHP call that
+    // raises it outright, and this handler only READS (its single write is one transient, at
+    // the very end): if it does hit the limit on a large site nothing is left half-done, the
+    // request simply fails and can be retried. The write handlers are a different case.
 
     $sizes  = wp_get_registered_image_subsizes();
     $upload = wp_upload_dir();
@@ -1872,7 +1911,10 @@ function cscc_ajax_scan_images() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- required to prevent PHP timeout on long-running image scans
+    // No request-time extension is asked for here. WordPress.org rejects the PHP call that
+    // raises it outright, and this handler only READS (its single write is one transient, at
+    // the very end): if it does hit the limit on a large site nothing is left half-done, the
+    // request simply fails and can be retried. The write handlers are a different case.
 
     $used = cscc_get_used_attachment_ids();
     $all  = get_posts( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'posts_per_page' => -1, 'fields' => 'ids' ) );
@@ -2173,7 +2215,10 @@ function cscc_ajax_img_start() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- required to prevent PHP timeout on long-running image scans
+    // No request-time extension is asked for here. WordPress.org rejects the PHP call that
+    // raises it outright, and this handler only READS (its single write is one transient, at
+    // the very end): if it does hit the limit on a large site nothing is left half-done, the
+    // request simply fails and can be retried. The write handlers are a different case.
 
     $used  = cscc_get_used_attachment_ids();
     $all   = get_posts( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'posts_per_page' => -1, 'fields' => 'ids' ) );
@@ -3439,8 +3484,9 @@ function cscc_update_image_references( $attachment_id, $old_file, $new_file ) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 function cscc_get_cspj_chunk_mb() {
-    $val = floatval( get_option( CSPJ_OPTION_CHUNK_MB, CSPJ_DEFAULT_CHUNK_MB ) );
-    if ( $val <= 0 ) { $val = CSPJ_DEFAULT_CHUNK_MB; }
+    // Falls back to the pre-rename key so an existing setting survives the upgrade.
+    $val = floatval( get_option( CSCC_OPTION_CHUNK_MB, get_option( CSCC_LEGACY_CHUNK_MB, CSCC_DEFAULT_CHUNK_MB ) ) );
+    if ( $val <= 0 ) { $val = CSCC_DEFAULT_CHUNK_MB; }
     return max( 0.25, min( 1.95, $val ) );
 }
 
@@ -3555,10 +3601,10 @@ function cscc_ajax_cspj_save_settings() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    $chunk_mb = floatval( wp_unslash( $_POST['chunk_mb'] ?? CSPJ_DEFAULT_CHUNK_MB ) );
-    if ( $chunk_mb <= 0 ) { $chunk_mb = CSPJ_DEFAULT_CHUNK_MB; }
+    $chunk_mb = floatval( wp_unslash( $_POST['chunk_mb'] ?? CSCC_DEFAULT_CHUNK_MB ) );
+    if ( $chunk_mb <= 0 ) { $chunk_mb = CSCC_DEFAULT_CHUNK_MB; }
     $chunk_mb = max( 0.25, min( 1.95, $chunk_mb ) );
-    update_option( CSPJ_OPTION_CHUNK_MB, $chunk_mb );
+    update_option( CSCC_OPTION_CHUNK_MB, $chunk_mb );
     wp_send_json_success( array( 'chunk_mb' => $chunk_mb, 'server_max' => cscc_get_cspj_server_max_mb() ) );
 }
 
@@ -3577,8 +3623,8 @@ function cscc_ajax_cspj_chunk_start() {
     if ( $filename === '' || $total_size <= 0 || $total <= 0 ) {
         wp_send_json_error( 'Invalid upload session parameters.' );
     }
-    if ( $total_size > CSPJ_MAX_TOTAL_MB * 1048576 ) {
-        wp_send_json_error( 'File exceeds the maximum allowed size of ' . CSPJ_MAX_TOTAL_MB . ' MB.' );
+    if ( $total_size > CSCC_MAX_TOTAL_MB * 1048576 ) {
+        wp_send_json_error( 'File exceeds the maximum allowed size of ' . CSCC_MAX_TOTAL_MB . ' MB.' );
     }
 
     $upload_id = wp_generate_uuid4();
@@ -3899,7 +3945,11 @@ function cscc_ajax_cspj_delete_converted() {
     }
 }
 
-// Cron: cleanup stale chunks
+// Cron: cleanup stale chunks.
+// Both names are hooked during the transition: an install upgraded mid-cycle still has the
+// legacy event sitting in cron, and a scheduled event whose handler has been renamed away runs
+// forever doing nothing — which is how the chunk directory silently stops being cleaned.
+add_action( 'cscc_cleanup_chunks', 'cscc_cspj_cron_cleanup' );
 add_action( 'cspj_cleanup_chunks', 'cscc_cspj_cron_cleanup' );
 function cscc_cspj_cron_cleanup() {
     try {
@@ -3915,14 +3965,20 @@ function cscc_cspj_cron_cleanup() {
             if ( $age > $max_age ) { cscc_cspj_delete_dir( $dir ); }
         }
     } catch ( \Throwable $e ) {
-        error_log( sprintf( '[CSC] cron "cspj_cleanup_chunks" exception (%s): %s in %s line %d', get_class( $e ), $e->getMessage(), $e->getFile(), $e->getLine() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational cron logging
+        error_log( sprintf( '[CSC] cron "cscc_cleanup_chunks" exception (%s): %s in %s line %d', get_class( $e ), $e->getMessage(), $e->getFile(), $e->getLine() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational cron logging
     }
 }
 
-// Schedule chunk cleanup cron on activation
+// Schedule chunk cleanup cron on activation, and retire the pre-rename event if it is still
+// scheduled. Unscheduling is not optional: leaving it would double-run the cleanup on every
+// upgraded install, because both names are hooked to the same callback above.
 register_activation_hook( __FILE__, function() {
-    if ( ! wp_next_scheduled( 'cspj_cleanup_chunks' ) ) {
-        wp_schedule_event( time() + 3600, 'hourly', 'cspj_cleanup_chunks' );
+    $legacy = wp_next_scheduled( 'cspj_cleanup_chunks' );
+    if ( $legacy ) {
+        wp_unschedule_event( $legacy, 'cspj_cleanup_chunks' );
+    }
+    if ( ! wp_next_scheduled( 'cscc_cleanup_chunks' ) ) {
+        wp_schedule_event( time() + 3600, 'hourly', 'cscc_cleanup_chunks' );
     }
 } );
 
@@ -4701,6 +4757,39 @@ function cscc_ajax_cron_purge_bin() {
 // ── Plugin lookup for cron hooks ─────────────────────────────────────────────
 
 /**
+ * Is a plugin with this directory slug installed?
+ *
+ * Asks WordPress for its own inventory of installed plugins rather than testing a path built
+ * from the plugins-directory constant. Two reasons: that constant misses installs where the
+ * plugins directory has been relocated, and WordPress.org rejects building paths from it.
+ *
+ * Both callers are admin-only diagnostic screens, where get_plugins() is loaded. Returns null
+ * rather than false if it is somehow unavailable, so a caller can tell "not installed" from
+ * "could not determine" instead of mislabelling one as the other.
+ *
+ * @since 2.5.40
+ * @param string $slug Plugin directory name.
+ * @return bool|null True installed, false not installed, null indeterminable.
+ */
+function cscc_plugin_slug_installed( $slug ) {
+	$slug = (string) $slug;
+	if ( '' === $slug || ! function_exists( 'get_plugins' ) ) {
+		return null;
+	}
+	static $slugs = null;
+	if ( null === $slugs ) {
+		$slugs = array();
+		foreach ( array_keys( (array) get_plugins() ) as $plugin_file ) {
+			$dir = strtok( (string) $plugin_file, '/' );
+			if ( $dir && $dir !== $plugin_file ) {
+				$slugs[ $dir ] = true;
+			}
+		}
+	}
+	return isset( $slugs[ $slug ] );
+}
+
+/**
  * Maps a cron hook name to its origin plugin via prefix matching.
  * Rules are sorted longest-prefix-first so more specific entries win.
  *
@@ -4898,7 +4987,7 @@ function cscc_cron_plugin_status( $slug, $core = false ) {
 	if ( empty( $slug ) ) {
 		return 'unknown';
 	}
-	if ( ! is_dir( WP_PLUGIN_DIR . '/' . $slug ) ) {
+	if ( false === cscc_plugin_slug_installed( $slug ) ) {
 		return 'not_installed';
 	}
 	$active = (array) get_option( 'active_plugins', array() );
@@ -5022,7 +5111,7 @@ function cscc_ajax_cron_status() {
 			} elseif ( ! empty( $callbacks ) ) {
 				// Callbacks are registered in $wp_filter, the plugin is loaded and active.
 				$ev['plugin_status'] = 'active';
-			} elseif ( ! empty( $plugin['s'] ) && is_dir( WP_PLUGIN_DIR . '/' . $plugin['s'] ) ) {
+			} elseif ( ! empty( $plugin['s'] ) && true === cscc_plugin_slug_installed( $plugin['s'] ) ) {
 				// Directory exists but no callbacks, installed but inactive or deactivated.
 				$ev['plugin_status'] = 'inactive';
 			} else {
@@ -5258,7 +5347,10 @@ function cscc_ajax_space_scan(): void {
 	check_ajax_referer( 'cscc_nonce', 'nonce' );
 	if ( ! current_user_can( 'manage_options' ) ) { wp_send_json_error( 'Insufficient permissions.' ); }
 
-	@set_time_limit( 60 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- scan may take a few seconds on large trees
+	// No request-time extension is asked for here. WordPress.org rejects the PHP call that
+	// raises it outright, and this handler only READS (its single write is one transient, at
+	// the very end): if it does hit the limit on a large site nothing is left half-done, the
+	// request simply fails and can be retried. The write handlers are a different case.
 
 	$upload_info = wp_upload_dir();
 	$base        = rtrim( $upload_info['basedir'], '/\\' );

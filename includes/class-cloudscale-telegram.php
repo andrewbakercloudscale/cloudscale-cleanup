@@ -21,8 +21,65 @@ if ( class_exists( 'CloudScale_Telegram' ) ) {
 class CloudScale_Telegram {
 // phpcs:enable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedClassFound
 
-	const OPTION_TOKEN   = 'cloudscale_telegram_bot_token'; // pragma:allow-secret
-	const OPTION_CHAT_ID = 'cloudscale_telegram_chat_id';
+	/**
+	 * Option names, and why there are two sets of them.
+	 *
+	 * WordPress.org named `cloudscale_telegram_bot_token` and `cloudscale_telegram_chat_id` in
+	 * its 18 Aug 2026 review as options not carrying the plugin's declared prefix, so the live
+	 * names moved to `csdt_`. These four options are DELIBERATELY shared by all five plugins —
+	 * one Telegram configuration for the whole suite, and only one copy of this class ever loads
+	 * (see the class_exists() guard) — so they cannot be prefixed per-plugin without splitting
+	 * one config into five.
+	 *
+	 * Renaming a live option is the dangerous part: the token, chat id and mute switch are what
+	 * make alerting work at all, and the five plugins do not deploy at the same instant. So every
+	 * read falls back to the legacy name and every write updates BOTH, which means an install
+	 * running any mix of old and new copies keeps working in either direction.
+	 *
+	 * The legacy writes can be dropped once all five plugins have shipped with the new names —
+	 * not before. `dr-restore.sh` also writes the legacy mute key from outside PHP, which is the
+	 * specific reason is_muted() honours either name rather than preferring one.
+	 */
+	const OPTION_TOKEN   = 'csdt_telegram_bot_token'; // pragma:allow-secret
+	const OPTION_CHAT_ID = 'csdt_telegram_chat_id';
+
+	const LEGACY_TOKEN   = 'cloudscale_telegram_bot_token'; // pragma:allow-secret
+	const LEGACY_CHAT_ID = 'cloudscale_telegram_chat_id';
+	const LEGACY_MUTED   = 'cloudscale_alerts_muted';
+	const LEGACY_RATE    = 'cloudscale_alert_rate';
+
+	/**
+	 * Reads the new option name, falling back to the legacy one while both may exist.
+	 *
+	 * An option that is present but empty counts as absent here: a half-migrated install can
+	 * hold an empty new-style row alongside a populated legacy one, and preferring the empty
+	 * value would disarm alerting silently — the failure mode this whole class exists to avoid.
+	 *
+	 * @param string $new    New option name.
+	 * @param string $legacy Legacy option name.
+	 * @param mixed  $fallback Returned when neither is set.
+	 * @return mixed
+	 */
+	private static function opt_read( string $new, string $legacy, $fallback = '' ) {
+		$value = get_option( $new, null );
+		if ( null !== $value && '' !== $value && array() !== $value ) {
+			return $value;
+		}
+		return get_option( $legacy, $fallback );
+	}
+
+	/**
+	 * Writes both the new and the legacy option name.
+	 *
+	 * @param string $new      New option name.
+	 * @param string $legacy   Legacy option name.
+	 * @param mixed  $value    Value to store.
+	 * @param bool   $autoload Autoload flag, passed through to both rows.
+	 */
+	private static function opt_write( string $new, string $legacy, $value, bool $autoload = false ): void {
+		update_option( $new, $value, $autoload );
+		update_option( $legacy, $value, $autoload );
+	}
 
 	/**
 	 * One switch that silences every alert from every plugin on this install.
@@ -45,13 +102,18 @@ class CloudScale_Telegram {
 	 * rather than at the call sites, because the point is that no future call site
 	 * can forget it. dr-restore.sh sets it on every copy it builds.
 	 */
-	const OPTION_MUTED = 'cloudscale_alerts_muted';
+	const OPTION_MUTED = 'csdt_alerts_muted';
 
 	/**
 	 * Is this install muted? True on restored copies (see OPTION_MUTED).
+	 *
+	 * EITHER name muting is enough. dr-restore.sh writes the legacy key directly, and a copy
+	 * that believes it is production is exactly the case where guessing wrong pages a human at
+	 * 3am — so this errs toward silence rather than toward preferring the new name.
 	 */
 	public static function is_muted(): bool {
-		return '1' === (string) get_option( self::OPTION_MUTED, '' );
+		return '1' === (string) get_option( self::OPTION_MUTED, '' )
+			|| '1' === (string) get_option( self::LEGACY_MUTED, '' );
 	}
 
 	/**
@@ -72,7 +134,7 @@ class CloudScale_Telegram {
 	 * throttle; the rest could flood freely, and any new one starts with no throttle at all. A
 	 * guarantee that has to be remembered 123 times is not a guarantee.
 	 */
-	const OPTION_RATE = 'cloudscale_alert_rate';
+	const OPTION_RATE = 'csdt_alert_rate';
 
 	/**
 	 * How long a REPEAT of the same alert stays quiet, by level.
@@ -146,7 +208,7 @@ class CloudScale_Telegram {
 	 */
 	private static function rate_gate( string $text, string $source, string $level ): ?string {
 		$now  = time();
-		$led  = get_option( self::OPTION_RATE, [] );
+		$led  = self::opt_read( self::OPTION_RATE, self::LEGACY_RATE, [] );
 		if ( ! is_array( $led ) ) {
 			$led = [];
 		}
@@ -185,7 +247,7 @@ class CloudScale_Telegram {
 			$led['dups'] = $dups + ( 'dup' === $blocked ? 1 : 0 );
 			$led['sent'] = $sent;
 			$led['sigs'] = $sigs;
-			update_option( self::OPTION_RATE, $led, false );
+			self::opt_write( self::OPTION_RATE, self::LEGACY_RATE, $led, false );
 			return null;
 		}
 
@@ -198,8 +260,9 @@ class CloudScale_Telegram {
 			}
 		}
 		$sent[] = $now;
-		update_option(
+		self::opt_write(
 			self::OPTION_RATE,
+			self::LEGACY_RATE,
 			[ 'sent' => $sent, 'sigs' => $sigs, 'held' => 0, 'dups' => 0 ],
 			false
 		);
@@ -219,7 +282,8 @@ class CloudScale_Telegram {
 	}
 
 	public static function is_configured(): bool {
-		return ! empty( get_option( self::OPTION_TOKEN ) ) && ! empty( get_option( self::OPTION_CHAT_ID ) );
+		return ! empty( self::opt_read( self::OPTION_TOKEN, self::LEGACY_TOKEN ) )
+			&& ! empty( self::opt_read( self::OPTION_CHAT_ID, self::LEGACY_CHAT_ID ) );
 	}
 
 	/**
@@ -348,9 +412,18 @@ class CloudScale_Telegram {
 		// X-Forwarded-For only when the immediate peer is a trusted proxy, so an
 		// attacker cannot dictate what this alert reports. It lives in Cyber
 		// DevTools, hence the guard — this file ships in five plugins.
+		//
+		// BOTH class names are tried because Cyber DevTools renamed this class to CSDT_DevTools
+		// for WordPress.org's prefixing rule, and a shared file cannot know which version of
+		// that plugin is installed beside it. Getting this wrong is quiet rather than loud: the
+		// fallback below is REMOTE_ADDR, which on this install is the container gateway, so the
+		// alert would name the proxy instead of the attacker and still look plausible.
 		$ip = '';
-		if ( is_callable( array( 'CloudScale_DevTools', 'get_client_ip' ) ) ) {
-			$ip = (string) call_user_func( array( 'CloudScale_DevTools', 'get_client_ip' ) );
+		foreach ( array( 'CSDT_DevTools', 'CloudScale_DevTools' ) as $devtools_class ) {
+			if ( is_callable( array( $devtools_class, 'get_client_ip' ) ) ) {
+				$ip = (string) call_user_func( array( $devtools_class, 'get_client_ip' ) );
+				break;
+			}
 		}
 		if ( '' === $ip && isset( $_SERVER['REMOTE_ADDR'] ) ) {
 			$ip = sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) );
@@ -509,8 +582,8 @@ class CloudScale_Telegram {
 			return false;
 		}
 
-		$token   = trim( (string) get_option( self::OPTION_TOKEN, '' ) );
-		$chat_id = trim( (string) get_option( self::OPTION_CHAT_ID, '' ) );
+		$token   = trim( (string) self::opt_read( self::OPTION_TOKEN, self::LEGACY_TOKEN, '' ) );
+		$chat_id = trim( (string) self::opt_read( self::OPTION_CHAT_ID, self::LEGACY_CHAT_ID, '' ) );
 		if ( ! $token || ! $chat_id ) {
 			return false;
 		}
@@ -562,8 +635,8 @@ class CloudScale_Telegram {
 	 */
 	public static function save_from_post(): void {
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- caller is responsible for nonce check
-		update_option( self::OPTION_TOKEN, sanitize_text_field( wp_unslash( $_POST['telegram_token'] ?? '' ) ) );
-		update_option( self::OPTION_CHAT_ID, sanitize_text_field( wp_unslash( $_POST['telegram_chat_id'] ?? '' ) ) );
+		self::opt_write( self::OPTION_TOKEN, self::LEGACY_TOKEN, sanitize_text_field( wp_unslash( $_POST['telegram_token'] ?? '' ) ) );
+		self::opt_write( self::OPTION_CHAT_ID, self::LEGACY_CHAT_ID, sanitize_text_field( wp_unslash( $_POST['telegram_chat_id'] ?? '' ) ) );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 	}
 
@@ -646,8 +719,8 @@ class CloudScale_Telegram {
 			// phpcs:enable WordPress.Security.NonceVerification.Missing
 
 			// Fall back to stored credentials (used by the credentials panel test button).
-			if ( ! $token ) { $token   = (string) get_option( self::OPTION_TOKEN, '' ); }
-			if ( ! $chat_id ) { $chat_id = (string) get_option( self::OPTION_CHAT_ID, '' ); }
+			if ( ! $token ) { $token   = (string) self::opt_read( self::OPTION_TOKEN, self::LEGACY_TOKEN, '' ); }
+			if ( ! $chat_id ) { $chat_id = (string) self::opt_read( self::OPTION_CHAT_ID, self::LEGACY_CHAT_ID, '' ); }
 
 			if ( ! $token || ! $chat_id ) {
 				wp_send_json_error( 'Bot token and chat ID are required.' );
@@ -690,8 +763,8 @@ class CloudScale_Telegram {
 	public static function render_settings_fields( string $text_domain, string $source = '' ): void {
 		static $js_output = false;
 
-		$token       = esc_attr( (string) get_option( self::OPTION_TOKEN, '' ) );
-		$chat_id     = esc_attr( (string) get_option( self::OPTION_CHAT_ID, '' ) );
+		$token       = esc_attr( (string) self::opt_read( self::OPTION_TOKEN, self::LEGACY_TOKEN, '' ) );
+		$chat_id     = esc_attr( (string) self::opt_read( self::OPTION_CHAT_ID, self::LEGACY_CHAT_ID, '' ) );
 		$test_nonce  = wp_create_nonce( 'cloudscale_telegram_test' );
 		$fetch_nonce = wp_create_nonce( 'cloudscale_telegram_fetch' );
 		?>

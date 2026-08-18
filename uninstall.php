@@ -37,6 +37,9 @@ $options = [ // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPre
     'cscc_img_max_height',
     'cscc_img_quality',
     'cscc_convert_png_to_jpg',
+    // Both names: the key was renamed for WordPress.org's one-prefix-per-plugin rule and the
+    // old row is deliberately left in place on upgrade, so uninstall is what finally removes it.
+    'cscc_chunk_mb',
     'cspj_chunk_mb',
     // Runtime data.
     'cscc_last_db_cleanup',
@@ -59,6 +62,7 @@ foreach ( $options as $option ) { // phpcs:ignore WordPress.NamingConventions.Pr
 // Clear scheduled cron events.
 wp_clear_scheduled_hook( 'cscc_scheduled_db_cleanup' );
 wp_clear_scheduled_hook( 'cscc_scheduled_img_cleanup' );
-wp_clear_scheduled_hook( 'cspj_cleanup_chunks' );
+wp_clear_scheduled_hook( 'cscc_cleanup_chunks' );
+wp_clear_scheduled_hook( 'cspj_cleanup_chunks' ); // pre-rename name; harmless if never scheduled
 wp_clear_scheduled_hook( 'cscc_health_hourly_collect' );
 wp_clear_scheduled_hook( 'cscc_health_weekly_snapshot' );
