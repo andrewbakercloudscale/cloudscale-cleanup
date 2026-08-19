@@ -29,9 +29,20 @@ add_action( 'init', function () {
     add_filter( 'tiny_mce_plugins', function ( $plugins ) {
         return is_array( $plugins ) ? array_diff( $plugins, array( 'wpemoji' ) ) : $plugins;
     } );
-    // Matched on the host, not on one exact URL. Core has registered this hint as
-    // '//s.w.org' and as 'https://s.w.org' at different versions, and array_diff() against a
-    // single literal silently stops removing anything the moment the other form is used.
+    // Matched on the host EXACTLY: not on a substring, and not on one exact URL.
+    //
+    // There are two ways to get this wrong and this filter has now had both. array_diff()
+    // against the single literal 'https://s.w.org' stopped removing anything the moment core
+    // used the other form it has shipped, '//s.w.org' — a registered filter quietly doing
+    // nothing. Replacing it with strpos() then over-matched in the other direction:
+    // 'ps.w.org' CONTAINS 's.w.org', and ps.w.org is a real WordPress host, so a hint naming
+    // it would have been stripped as well.
+    //
+    // Entries arrive in more than one shape and all of them have to be handled: a full URL,
+    // a scheme-relative '//host', and a BARE host with no scheme at all, because the
+    // dns-prefetch list is assembled from parsed hostnames rather than URLs. Preconnect
+    // entries may instead be an attribute array keyed 'href'. Anything unrecognised is KEPT
+    // — the job here is to remove one known hint, so in doubt it must not remove.
     add_filter( 'wp_resource_hints', function ( $urls ) {
         if ( ! is_array( $urls ) ) {
             return $urls;
@@ -44,7 +55,17 @@ add_action( 'init', function () {
             array_filter(
                 $urls,
                 static function ( $u ) use ( $emoji_host ) {
-                    return ! is_string( $u ) || false === strpos( $u, $emoji_host );
+                    if ( is_array( $u ) ) {
+                        $u = isset( $u['href'] ) ? $u['href'] : '';
+                    }
+                    if ( ! is_string( $u ) || '' === $u ) {
+                        return true;
+                    }
+                    $host = (string) wp_parse_url( $u, PHP_URL_HOST );
+                    if ( '' === $host ) {
+                        $host = ltrim( $u, '/' ); // a bare host, carrying no scheme
+                    }
+                    return 0 !== strcasecmp( $host, $emoji_host );
                 }
             )
         );

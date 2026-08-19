@@ -370,6 +370,27 @@ if ! bash "$_WPORG_VALIDATE" "$REPO_DIR" --offline; then
 fi
 echo ""
 
+# ── The emoji resource hint is removed, and nothing else is ─────────────────
+# All five plugins strip core's emoji-CDN dns-prefetch hint with the same wp_resource_hints
+# filter, and that filter has now been wrong in BOTH directions. array_diff() against the
+# single literal 'https://s.w.org' removed nothing once core used the '//s.w.org' form it has
+# also shipped. Replacing it with strpos() then over-matched: 'ps.w.org' contains 's.w.org',
+# and ps.w.org is a real WordPress host. Neither mistake produces an error anywhere — it
+# changes one <link> in <head> — so both were found by reading, not by anything reporting.
+# The checker executes each plugin's own closure rather than restating the rule.
+_EMOJI_HINT_CHECK="$GITHUB_DIR/shared-build-tools/check-emoji-hint-filter.php"
+if [ ! -f "$_EMOJI_HINT_CHECK" ]; then
+    echo "ERROR: emoji-hint checker not found at $_EMOJI_HINT_CHECK"
+    exit 1
+fi
+if ! php "$_EMOJI_HINT_CHECK" "wordpress-database-cleanup-plugin"; then
+    echo ""
+    echo "ERROR: the emoji resource-hint filter is wrong — build blocked."
+    echo "  Either the hint is no longer removed, or the filter is stripping hints it should not."
+    exit 1
+fi
+echo ""
+
 # ── Shared class copies must match their canonical source ────────────────────
 # CloudScale_Telegram and the model-name map are shared by all five plugins and guarded by
 # class_exists(), so exactly ONE copy loads at runtime. On the live install that copy belongs
