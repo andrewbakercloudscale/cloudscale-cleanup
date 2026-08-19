@@ -1,0 +1,5 @@
+{
+  "_comment": "Accepted Plugin Check findings. Gate: shared-build-tools/check-plugincheck-parity.php, which runs WordPress.org's OWN Plugin Check sniffs. This list is EMPTY and must stay empty: the policy is zero errors and zero warnings from the reviewer's tool. Genuine false positives are suppressed at the line with a `phpcs:ignore PluginCheck.<code> -- reason` annotation, which Plugin Check honours (it has no --ignore-annotations option), so the reviewer sees a clean report too. An entry appearing here means something was accepted rather than resolved.",
+  "memory_limit": "1024M",
+  "accepted": []
+}

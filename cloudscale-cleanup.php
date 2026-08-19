@@ -29,8 +29,25 @@ add_action( 'init', function () {
     add_filter( 'tiny_mce_plugins', function ( $plugins ) {
         return is_array( $plugins ) ? array_diff( $plugins, array( 'wpemoji' ) ) : $plugins;
     } );
+    // Matched on the host, not on one exact URL. Core has registered this hint as
+    // '//s.w.org' and as 'https://s.w.org' at different versions, and array_diff() against a
+    // single literal silently stops removing anything the moment the other form is used.
     add_filter( 'wp_resource_hints', function ( $urls ) {
-        return array_values( array_diff( $urls, array( 'https://s.w.org' ) ) );
+        if ( ! is_array( $urls ) ) {
+            return $urls;
+        }
+        // This is the host of the emoji CDN hint being REMOVED from wp_resource_hints: the
+        // plugin's effect here is to stop a remote asset load, not to start one.
+        // phpcs:ignore PluginCheck.CodeAnalysis.Offloading.OffloadedContent -- host of the hint being removed, never requested.
+        $emoji_host = 's.w.org';
+        return array_values(
+            array_filter(
+                $urls,
+                static function ( $u ) use ( $emoji_host ) {
+                    return ! is_string( $u ) || false === strpos( $u, $emoji_host );
+                }
+            )
+        );
     } );
 }, 1 );
 
