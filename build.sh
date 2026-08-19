@@ -406,6 +406,25 @@ if ! php "$_CSCC_OPT_TEST"; then
 fi
 echo ""
 
+# ── Image chunks stay resumable and safe to be killed ───────────────────────
+# The three image handlers used to raise the request time limit, which WordPress.org rejects.
+# Removing it was only safe because each chunk is now bounded by the host's own clock AND the
+# commit order was fixed so a killed request cannot land destructively — the recycle manifest is
+# flushed before any row is deleted, and the optimiser renames over the original rather than
+# deleting it first. Neither property throws when it regresses; it loses somebody's images on the
+# one request that happens to be killed. Verified to fail on each injected regression.
+_CSCC_CHUNK_TEST="$GITHUB_DIR/shared-build-tools/test-cleanup-resumable-chunks.php"
+if [ ! -f "$_CSCC_CHUNK_TEST" ]; then
+    echo "ERROR: resumable-chunk test not found at $_CSCC_CHUNK_TEST"
+    exit 1
+fi
+if ! php "$_CSCC_CHUNK_TEST"; then
+    echo ""
+    echo "ERROR: an image chunk is no longer resumable or crash-ordered — build blocked."
+    exit 1
+fi
+echo ""
+
 # ── Error text in the units the timeouts are set in ─────────────────────────
 # Every timeout in this plugin is SECONDS, and WordPress reports one in milliseconds because
 # that is curl's wording: "cURL error 28: Operation timed out after 20000 milliseconds". The

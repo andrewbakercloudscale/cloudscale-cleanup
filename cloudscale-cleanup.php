@@ -95,6 +95,36 @@ define( 'CSCC_CHUNK_DB',       50 );
 define( 'CSCC_CHUNK_IMAGES',   10 );
 define( 'CSCC_CHUNK_OPTIMISE',  5 );
 
+/**
+ * Wall-clock deadline for one chunk of work, derived from the host's own limit.
+ *
+ * This replaces raising the request time limit, which WordPress.org rejects outright and which
+ * was never dependable: many hosts refuse it, and a hard FastCGI or proxy ceiling is not
+ * something PHP can lift at all. Bounding the work and letting the client ask for the next slice
+ * is strictly more robust than assuming an unlimited request.
+ *
+ * The reserve is the important part. Where an item is claimed before it is processed, a request
+ * killed mid-item drops that item silently — so the deadline is checked only BETWEEN items, and
+ * enough time is held back for one whole worst-case item. On this plugin's target hardware a
+ * single image can take 30-60s, which is why callers pass a large reserve rather than a token one.
+ *
+ * PHP counts only the script's own execution time here: stream operations, system calls and
+ * database queries are excluded (Windows is the exception, where the measured time is real). Image
+ * encoding through GD or Imagick is in-process CPU, so it DOES count, which is exactly why these
+ * handlers needed the ceiling raised in the first place.
+ *
+ * @since 1.6.30
+ * @param int $reserve Seconds to hold back for one more item.
+ * @return int Unix timestamp after which no NEW item should be started.
+ */
+function cscc_chunk_deadline( int $reserve ): int {
+    $host_limit = (int) ini_get( 'max_execution_time' );
+    // 0 means "no limit configured" (CLI, or a host that removed it). Still bound the work: an
+    // unbounded AJAX request that never returns looks identical to a hung one from the browser.
+    $budget = $host_limit > 0 ? ( $host_limit - $reserve ) : 55;
+    return time() + max( 5, $budget );
+}
+
 // PNG to JPEG converter constants
 // These carried a third prefix (cspj_) alongside this plugin's own cscc_, which WordPress.org
 // flags: one distinctive prefix per plugin. Renaming the CONSTANTS is free — they persist
@@ -1766,8 +1796,6 @@ function cscc_ajax_regen_thumb_batch() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- required to prevent PHP timeout on long-running image scans
-
     $queue = get_transient( 'cscc_regen_thumb_queue' );
     if ( ! is_array( $queue ) ) {
         wp_send_json_error( 'Queue expired, please scan again.' );
@@ -1780,8 +1808,22 @@ function cscc_ajax_regen_thumb_batch() {
 
     $batch       = array();
     $regenerated = 0;
+    $processed   = 0;
+
+    // Regenerating one attachment's thumbnails is CPU-bound and can take tens of seconds on
+    // low-power hardware, so the batch stops on the host's own clock rather than raising it.
+    // The reserve covers one more whole image; the deadline is only consulted between images
+    // because there is no safe way to abandon a half-written thumbnail set.
+    $deadline = cscc_chunk_deadline( 60 );
 
     foreach ( $slice as $id ) {
+        // Out of budget with images left: return what was done and let the client ask again.
+        // Checked before starting an image, never during one.
+        if ( $processed > 0 && time() >= $deadline ) {
+            break;
+        }
+        ++$processed;
+
         $file = get_attached_file( $id );
         if ( ! $file || ! file_exists( $file ) ) {
             $batch[] = array( 'id' => $id, 'ok' => false, 'skipped' => true, 'error' => 'file_missing' );
@@ -1797,7 +1839,11 @@ function cscc_ajax_regen_thumb_batch() {
         }
     }
 
-    $next_offset = $offset + $batch_size;
+    // ACTUAL work done, not the nominal batch size. This used to advance by $batch_size on the
+    // assumption that every image in the slice was handled; now that the loop can stop early,
+    // that assumption would silently SKIP the unprocessed images rather than retry them — a
+    // worse outcome than the timeout this replaced, and invisible in the UI.
+    $next_offset = $offset + max( 1, $processed );
     wp_send_json_success( array(
         'batch'       => $batch,
         'next_offset' => $next_offset,
@@ -2243,13 +2289,8 @@ function cscc_ajax_img_chunk() {
     if ( ! current_user_can( 'manage_options' ) ) {
         wp_send_json_error( 'Insufficient permissions.' );
     }
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- required to prevent PHP timeout on long-running image scans
-
     $queue = get_transient( 'cscc_img_queue' );
     if ( ! is_array( $queue ) ) { wp_send_json_error( 'Session expired, please start again.' ); }
-
-    $chunk = array_splice( $queue, 0, CSCC_CHUNK_IMAGES );
-    set_transient( 'cscc_img_queue', $queue, HOUR_IN_SECONDS );
 
     // Load existing manifest
     if ( ! cscc_media_recycle_ensure_dir() ) {
@@ -2258,47 +2299,86 @@ function cscc_ajax_img_chunk() {
     $manifest = cscc_media_recycle_read_manifest();
 
     $lines = array();
-    foreach ( $chunk as $id ) {
+
+    // Moving an attachment's files is I/O and its thumbnails can be numerous, so the chunk stops
+    // on the host's own clock instead of raising the request limit. Reserve covers one more whole
+    // attachment; the deadline is only consulted between attachments, never inside one.
+    $deadline = cscc_chunk_deadline( 30 );
+    $handled  = 0;
+
+    // ONE ITEM AT A TIME, popped only once it is finished, and the manifest flushed to disk
+    // BEFORE its database rows are removed. That ordering is the whole point of this loop:
+    //
+    //   - It used to array_splice() the whole chunk off the queue and persist that immediately,
+    //     so a request killed part-way through lost every remaining ID in the chunk. They were
+    //     never retried and nothing said so.
+    //   - It used to write the manifest ONCE, after the loop. A kill between deleting an
+    //     attachment's rows and that write left the files sitting in the recycle directory with
+    //     no manifest entry — deleted from the media library and NOT restorable. That is the one
+    //     outcome this feature must never produce, since "recycle" is a promise it can be undone.
+    //
+    // Now: files moved -> manifest written -> rows deleted -> item popped. A kill at any point
+    // leaves either an untouched attachment still queued, or a restorable manifest entry.
+    while ( $handled < CSCC_CHUNK_IMAGES && ! empty( $queue ) ) {
+        if ( $handled > 0 && time() >= $deadline ) {
+            break;
+        }
+
+        $id    = (int) $queue[0];
         $title = get_the_title( $id );
         try {
             $result = cscc_media_recycle_save_attachment( $id );
             if ( ! empty( $result['error'] ) ) {
                 $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ', ' . $result['error'] );
-                continue;
+            } else {
+                $file_count = count( $result['files_moved'] );
+                $err_count  = count( $result['errors'] );
+
+                // Store in manifest keyed by attachment ID
+                $manifest[ (string) $id ] = array(
+                    'post'        => $result['post'],
+                    'meta'        => $result['meta'],
+                    'files_moved' => $result['files_moved'],
+                    'stored_map'  => $result['stored_map'],
+                    'recycled_at' => current_time( 'mysql' ),
+                );
+
+                // Persisted before the rows go, so the item is restorable from this moment on.
+                // If this write fails the rows are deliberately LEFT ALONE: an attachment still in
+                // the library is a visible non-event, an unrestorable one is silent data loss.
+                if ( ! cscc_media_recycle_write_manifest( $manifest ) ) {
+                    $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] ID ' . $id . ', manifest write failed; attachment left in place.' );
+                    unset( $manifest[ (string) $id ] );
+                    array_shift( $queue );
+                    set_transient( 'cscc_img_queue', $queue, HOUR_IN_SECONDS );
+                    ++$handled;
+                    continue;
+                }
+
+                // Remove DB records directly, files are already moved, so skip wp_delete_attachment()
+                // which is very slow due to hook firing (thumbnail deletion, cache clearing, etc.)
+                $wpdb->delete( $wpdb->posts,    array( 'ID'      => $id ), array( '%d' ) );
+                $wpdb->delete( $wpdb->postmeta, array( 'post_id' => $id ), array( '%d' ) );
+                clean_post_cache( $id );
+
+                $msg = '  [RECYCLED] ID ' . $id . ', ' . esc_html( $title ) . ' (' . $file_count . ' file(s))';
+                if ( $err_count > 0 ) {
+                    $msg .= ' ⚠ ' . $err_count . ' error(s): ' . implode( '; ', $result['errors'] );
+                }
+                $lines[] = array( 'type' => 'deleted', 'text' => $msg );
             }
-            $file_count = count( $result['files_moved'] );
-            $err_count  = count( $result['errors'] );
-
-            // Store in manifest keyed by attachment ID
-            $manifest[ (string) $id ] = array(
-                'post'        => $result['post'],
-                'meta'        => $result['meta'],
-                'files_moved' => $result['files_moved'],
-                'stored_map'  => $result['stored_map'],
-                'recycled_at' => current_time( 'mysql' ),
-            );
-
-            // Remove DB records directly, files are already moved, so skip wp_delete_attachment()
-            // which is very slow due to hook firing (thumbnail deletion, cache clearing, etc.)
-            $wpdb->delete( $wpdb->posts,    array( 'ID'      => $id ), array( '%d' ) );
-            $wpdb->delete( $wpdb->postmeta, array( 'post_id' => $id ), array( '%d' ) );
-            clean_post_cache( $id );
-
-            $msg = '  [RECYCLED] ID ' . $id . ', ' . esc_html( $title ) . ' (' . $file_count . ' file(s))';
-            if ( $err_count > 0 ) {
-                $msg .= ' ⚠ ' . $err_count . ' error(s): ' . implode( '; ', $result['errors'] );
-            }
-            $lines[] = array( 'type' => 'deleted', 'text' => $msg );
         } catch ( Exception $e ) {
             $lines[] = array( 'type' => 'error', 'text' => '  [EXCEPTION] ID ' . $id . ', ' . $e->getMessage() );
         } catch ( Throwable $e ) {
             $lines[] = array( 'type' => 'error', 'text' => '  [FATAL] ID ' . $id . ', ' . $e->getMessage() );
         }
-    }
 
-    // Save updated manifest
-    if ( ! cscc_media_recycle_write_manifest( $manifest ) ) {
-        $lines[] = array( 'type' => 'error', 'text' => '  [ERROR] Failed to write media recycle manifest.' );
+        // Popped whether it succeeded or errored — an item that cannot be processed must not sit
+        // at the head of the queue forever, because the client loops on `remaining` and would
+        // retry it indefinitely. The failure is reported in `lines` either way.
+        array_shift( $queue );
+        set_transient( 'cscc_img_queue', $queue, HOUR_IN_SECONDS );
+        ++$handled;
     }
 
     wp_send_json_success( array( 'remaining' => count( $queue ), 'lines' => $lines ) );
@@ -3308,15 +3388,24 @@ function cscc_ajax_optimise_chunk() {
     $convert_png  = get_option( 'cscc_convert_png_to_jpg', '0' ) === '1';
     $min_gain_pct = max( 0, intval( get_option( 'cscc_img_min_gain_pct', 10 ) ) );
 
-    @set_time_limit( 120 ); // phpcs:ignore Squiz.PHP.DiscouragedFunctions.Discouraged -- image processing can take 30-60 s per image on low-power hardware
-
+    // NO deadline check and no time-limit lift here, and both omissions are deliberate.
+    //
+    // This handler does exactly ONE image per request, so there is no boundary between items to
+    // yield on — the unit of work is already as small as it goes. Raising the ceiling is what
+    // WordPress.org rejects, and it was protecting the wrong thing anyway: the danger was never
+    // the request ending, it was WHERE it ended. So instead of buying more time, the commit
+    // sequence below was made safe to be killed at any point (see the notes on each rename).
+    //
+    // What that leaves is: on a host whose limit is shorter than one image takes, that image is
+    // never optimised and the client moves on. Slow, visible, and non-destructive.
     $queue       = $run['queue'];
-    $chunk       = array_splice( $queue, 0, 1 ); // 1 image per request, wp_generate_attachment_metadata can take 30+ s on a Pi
+    $chunk       = array_slice( $queue, 0, 1 ); // 1 image per request, wp_generate_attachment_metadata can take 30+ s on a Pi
     $total_saved = (int) ( $run['saved'] ?? 0 );
     $total_count = (int) ( $run['count'] ?? 0 );
 
-    $run['queue'] = $queue;
-    update_option( 'cscc_optimise_run', $run, false );
+    // The queue is NOT advanced yet. It used to be spliced and persisted before the image was
+    // touched, so a request killed during the work silently skipped that image with nothing to
+    // say it had been dropped. It is now advanced after the attempt, at the end of the handler.
 
     $lines = array();
 
@@ -3372,9 +3461,15 @@ function cscc_ajax_optimise_chunk() {
                 continue;
             }
             // Sufficient gain, commit the conversion.
+            //
+            // ORDER MATTERS, and it changed: the database is pointed at the new file BEFORE the
+            // old one is deleted. It used to delete the .png first, so a request killed in the gap
+            // left the attachment pointing at a file that no longer existed — a permanently broken
+            // image. Now the worst a kill in that gap leaves is an orphaned .png on disk, which
+            // costs a little space and breaks nothing.
             @rename( $tmp_file, $new_file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename
-            wp_delete_file( $file );
             update_attached_file( $id, $new_file );
+            wp_delete_file( $file );
             $meta = wp_generate_attachment_metadata( $id, $new_file );
             wp_update_attachment_metadata( $id, $meta );
             wp_update_post( array( 'ID' => $id, 'post_mime_type' => 'image/jpeg' ) );
@@ -3408,7 +3503,13 @@ function cscc_ajax_optimise_chunk() {
                 continue;
             }
             // Sufficient gain, replace original.
-            wp_delete_file( $file );
+            //
+            // A single rename, NOT delete-then-rename. rename() over an existing path on the same
+            // filesystem is atomic: the file is either the old one or the new one, never absent.
+            // The previous delete-then-rename opened a window in which the original was already
+            // gone and the replacement not yet in place — and a request killed in that window
+            // destroyed the image outright, with no copy anywhere. That window is why this handler
+            // appeared to need a raised time limit; closing it is what let the limit go.
             @rename( $tmp_file, $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename
             if ( $resized ) {
                 // Dimensions changed, regenerate thumbnails at new size.
@@ -3431,6 +3532,13 @@ function cscc_ajax_optimise_chunk() {
         $lines[] = array( 'type' => 'deleted', 'text' => '  [OPTIMISED] ID ' . $id . ', ' . esc_html( $title ) . ' ' . size_format( $size_old ) . ' → ' . size_format( $size_new ) . ' (saved ' . size_format( $saved ) . ')' );
     }
 
+    // Advance the queue now, after the attempt rather than before it. Popped whether the image
+    // succeeded, was skipped or errored: the client loops on `remaining`, so an item left at the
+    // head would be retried forever. A request killed before reaching this line leaves the image
+    // still queued and gets retried once — which the commit ordering above makes safe.
+    array_shift( $queue );
+
+    $run['queue'] = $queue;
     $run['saved'] = $total_saved;
     $run['count'] = $total_count;
     update_option( 'cscc_optimise_run', $run, false );

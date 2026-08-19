@@ -1,14 +1,13 @@
 {
-    "_comment": "Config for shared-build-tools/check-wporg-rejection-classes.php. 'cloudscale' is the shared-library prefix (CloudScale_Telegram/CloudScale_Licence come from cloudscale-backup).",
-    "prefixes": [
-        "cscc",
-        "cloudscale"
-    ],
-    "legacy_prefixes": [],
-    "legacy_budget": 0,
-    "foreign_hooks": [],
-    "path_exemptions": [],
-    "finding_budget": {
-        "runtime-config": 3
-    }
+  "_comment": "Config for shared-build-tools/check-wporg-rejection-classes.php. 'cloudscale' is the shared-library prefix (CloudScale_Telegram/CloudScale_Licence come from cloudscale-backup).",
+  "prefixes": [
+    "cscc",
+    "cloudscale"
+  ],
+  "legacy_prefixes": [],
+  "legacy_budget": 0,
+  "foreign_hooks": [],
+  "path_exemptions": [],
+  "finding_budget": {},
+  "_finding_budget_note": "Empty, and deliberately PRESENT rather than removed: with the key here any new finding of any class fails the build immediately. The 3 runtime-config entries it used to hold were the @set_time_limit(120) calls in the thumbnail-regen, media-recycle and image-optimise handlers, all removed 2026-08-19 in favour of a host-derived wall-clock budget (cscc_chunk_deadline) plus crash-safe commit ordering. NOTE: --tighten cannot clear a stale budget once a plugin is clean, because the checker exits on its clean path before reaching the ratchet; this was set by hand."
 }
