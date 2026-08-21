@@ -626,7 +626,7 @@ class CloudScale_Telegram {
 			// Transport failure (timeout, DNS, connection refused). Log internally so the
 			// fire-and-forget callers that don't check the return value still leave a
 			// trace the operator can grep. Without this, a Telegram outage is invisible.
-			self::log_transport_failure( 'transport', $response->get_error_message() );
+			self::log_transport_failure( 'transport', CloudScale_Error_Text::in_seconds( $response->get_error_message() ) );
 			return false;
 		}
 
