@@ -623,10 +623,45 @@ class CloudScale_Telegram {
 		);
 
 		if ( is_wp_error( $response ) ) {
+			// Transport failure (timeout, DNS, connection refused). Log internally so the
+			// fire-and-forget callers that don't check the return value still leave a
+			// trace the operator can grep. Without this, a Telegram outage is invisible.
+			self::log_transport_failure( 'transport', $response->get_error_message() );
 			return false;
 		}
 
-		return (int) wp_remote_retrieve_response_code( $response ) === 200;
+		$http_code = (int) wp_remote_retrieve_response_code( $response );
+		if ( 200 !== $http_code ) {
+			// Non-200 (401 bad token, 429 Telegram rate limit, etc.). Same reason as above.
+			self::log_transport_failure( "HTTP {$http_code}", wp_remote_retrieve_body( $response ) );
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Logs a Telegram delivery failure so a silent outage or revoked bot token is
+	 * discoverable. Deduplicated per-request so a burst of failed alerts doesn't flood
+	 * the log.
+	 *
+	 * @param string $kind   Failure category (e.g. 'transport', 'HTTP 401').
+	 * @param string $detail Error message or response body.
+	 */
+	private static function log_transport_failure( string $kind, string $detail ): void {
+		static $logged = [];
+		if ( isset( $logged[ $kind ] ) ) {
+			return;
+		}
+		$logged[ $kind ] = true;
+
+		$msg = 'CloudScale_Telegram: delivery failed (' . $kind . ')';
+		if ( '' !== $detail ) {
+			// Truncate: Telegram error bodies can be long, and the log is one line.
+			$msg .= ': ' . substr( $detail, 0, 200 );
+		}
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- diagnostic trace for an alert channel that is itself down; no plugin-specific log is guaranteed to exist here
+		error_log( $msg );
 	}
 
 	/**

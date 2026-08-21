@@ -3,7 +3,7 @@
  * Plugin Name: CloudScale Cleanup
  * Plugin URI:  https://cloudscale.consulting
  * Description: Database and media library cleanup with dry-run preview, image optimisation, PNG to JPEG conversion, and chunked processing safe on any server. Free, open source, no subscriptions.
- * Version:     2.5.103
+ * Version:     2.5.104
  * Author:      CloudScale
  * Author URI:  https://cloudscale.consulting
  * License:     GPL-2.0-or-later
@@ -81,7 +81,7 @@ add_action( 'admin_init', function () {
     remove_action( 'admin_print_styles', 'print_emoji_styles' );
 }, 1 );
 
-define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.103' );
+define( 'CLOUDSCALE_CLEANUP_VERSION', '2.5.104' );
 define( 'CLOUDSCALE_CLEANUP_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_URL', plugin_dir_url( __FILE__ ) );
 define( 'CLOUDSCALE_CLEANUP_SLUG', 'cloudscale-cleanup' );
