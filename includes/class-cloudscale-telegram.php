@@ -375,6 +375,11 @@ class CloudScale_Telegram {
 		$lines[] = 'Host: ' . $host . ( '' !== $server_ip ? ' (' . $server_ip . ')' : '' );
 		$lines[] = 'From: ' . self::trigger_source();
 
+		$account = self::acting_account();
+		if ( '' !== $account ) {
+			$lines[] = 'Account: ' . $account;
+		}
+
 		$method = isset( $_SERVER['REQUEST_METHOD'] )
 			? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) )
 			: '';
@@ -393,6 +398,28 @@ class CloudScale_Telegram {
 		}
 
 		return "\n" . implode( "\n", $lines );
+	}
+
+	/**
+	 * The WordPress account attached to this request, when there is one.
+	 *
+	 * "From: 41.198.157.47" alone reads as an unknown attacker even when the request carried a
+	 * valid, currently-authenticated admin session — the one piece of context that actually
+	 * answers "is this me" was missing from every alert. Added rather than assumed: wp-cron and
+	 * WP-CLI genuinely have no session, and a request whose auth cookie has not been processed
+	 * yet at the point send() runs gets no line rather than a guessed one.
+	 *
+	 * @return string The user_login, or '' when no session is attached to this request.
+	 */
+	private static function acting_account(): string {
+		if ( ! function_exists( 'get_current_user_id' ) || ! function_exists( 'wp_get_current_user' ) ) {
+			return '';
+		}
+		if ( 0 === (int) get_current_user_id() ) {
+			return '';
+		}
+		$user = wp_get_current_user();
+		return ( $user && $user->exists() ) ? sanitize_text_field( $user->user_login ) : '';
 	}
 
 	/**
